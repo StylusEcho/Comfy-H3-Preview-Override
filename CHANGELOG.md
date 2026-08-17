@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+Added the interactive σ/Δ and step-time graphs from KJNodes' Preview Override node,
+under the live preview image. The Python side now sends the sampler's σ schedule once
+up front and, on every rendered preview, a Δ (change-magnitude) reading and step timing
+alongside the image; the JS side draws both as scrubbable canvases — hover to inspect
+any step, click to lock it, arrow keys to step while locked, click the step-time graph
+to toggle ms/s. The SamplerDetailBoost curve overlay and KJNodes' per-step image-frame
+cache/scrub were left out as out of scope; this node still shows one always-current
+preview image.
+
 ## 0.2.0
 
 All of the node's widgets (`decode`, `tiny_vae`, `preview_target`, `preview_frames`,

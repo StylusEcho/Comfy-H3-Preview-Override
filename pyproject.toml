@@ -1,7 +1,7 @@
 [project]
 name = "comfy-h3-preview-override"
 description = "MiniMax H3 Preview Override, combined with KJNodes' taeh3/tiny-VAE decode path: live, whole-shot sampling preview for MiniMax H3 with latent2rgb, taeh3 and full-VAE decode modes."
-version = "0.2.0"
+version = "0.3.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs.

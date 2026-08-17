@@ -280,12 +280,18 @@ class _OuterSampleWrapper:
             return max(0.1, self.preview_fps)
         return max(0.1, self.preview_fps * shown / max(1, pixel_frames))
 
-    def _send_to_node(self, b64, n_frames, step, total_steps, ms, rate):
+    def _send_to_node(self, b64, n_frames, step, total_steps, ms, rate,
+                       sigma=None, delta=None, step_ms=None, avg_step_ms=None):
         server.PromptServer.instance.send_sync(EVENT, {
             "node_id": self.node_id, "webp": b64, "frames": n_frames,
             "fps": round(float(rate), 2), "source_fps": round(float(self.preview_fps), 2),
             "step": step, "total_steps": total_steps, "ms": ms, "mode": self.decode_mode,
             "playback": self.playback,
+            # Graph data for the node's interactive σ/Δ and step-time panels (ported from
+            # KJNodes' Preview Override). sigma/delta/step_ms ride along with the image, so
+            # they update on the same cadence every_n_steps/max_preview_overhead allow —
+            # slower than raw sampler steps if either is throttling this run.
+            "sigma": sigma, "delta": delta, "step_ms": step_ms, "avg_step_ms": avg_step_ms,
         })
 
     def __call__(self, executor, noise, latent_image, sampler, sigmas, denoise_mask,
@@ -293,6 +299,30 @@ class _OuterSampleWrapper:
         guider = executor.class_obj
         latent_shapes = kwargs.get("latent_shapes")
         latent_format = guider.model_patcher.model.latent_format
+        to_node = self.target in (TARGET_NODE, TARGET_BOTH)
+
+        # The full σ schedule for this run, sent once up front so the node's graph can draw
+        # its x-axis before the first preview lands. Also doubles as the per-step sigma
+        # lookup below (KJNodes indexes the same list the same way).
+        sigmas_list = sigmas.detach().cpu().tolist() if sigmas is not None else []
+        if to_node and sigmas_list:
+            server.PromptServer.instance.send_sync(EVENT, {
+                "node_id": self.node_id, "step": 0,
+                "total_steps": max(0, len(sigmas_list) - 1), "sigmas": sigmas_list,
+            })
+
+        # Pre-seed the Δ baseline with the model's own first transformation (noise * sigma0)
+        # so the very first rendered preview already has a real delta instead of a blank one.
+        last_x0_cpu = None
+        try:
+            if sigmas_list:
+                s0 = sigmas[0].to(noise.device) if hasattr(sigmas[0], "to") else sigmas[0]
+                seeded = _video_stream(noise * s0, latent_shapes)
+                if seeded is not None and seeded.ndim == 5:
+                    seeded = _pick_frames(seeded, self.preview_frames)
+                    last_x0_cpu = seeded.detach().float().cpu()
+        except Exception as e:
+            log.warning("[H3PreviewOverride] initial delta seed failed: %s", e)
 
         to_rgb = None
         if self.decode_mode != DECODE_VAE:
@@ -319,7 +349,6 @@ class _OuterSampleWrapper:
                     log.warning("[H3PreviewOverride] preview unavailable: %s", e)
 
         vhs = _VHSStreamer(self.preview_fps) if self.target in (TARGET_SAMPLER, TARGET_BOTH) else None
-        to_node = self.target in (TARGET_NODE, TARGET_BOTH)
 
         # Core's previewer is built before we are reached, so suppression has to happen on
         # the class it goes through. Restored in the finally below, always.
@@ -330,7 +359,8 @@ class _OuterSampleWrapper:
 
         original_cb = callback
         state = {"warned": False, "sent": 0, "cost": 0.0, "finished": 0.0, "anim": 0.0,
-                 "throttle_logged": False, "cap_logged": False}
+                 "throttle_logged": False, "cap_logged": False, "last_time": None,
+                 "step_ms_window": [], "last_x0_cpu": last_x0_cpu}
         log.info("[H3PreviewOverride] preview: %s, target=%s, <=%d frames @%d fps, max %dpx.",
                  self.decode_mode, self.target, self.preview_frames, self.preview_fps,
                  self.max_resolution)
@@ -348,20 +378,45 @@ class _OuterSampleWrapper:
             if (to_rgb is not None or self.vae is not None or tiny_vae_decoder is not None) \
                     and x0 is not None and step % self.every_n_steps == 0 \
                     and not _should_skip(time.time()):
-                t0 = time.time()
+                now_t = time.time()
+                # Time since the last *rendered* preview, not the raw sampler step — with
+                # every_n_steps or max_preview_overhead throttling, several sampler steps can
+                # elapse between two renders, and this graphs exactly that gap, honestly.
+                step_ms = None
+                if state["last_time"] is not None:
+                    step_ms = (now_t - state["last_time"]) * 1000.0
+                    window = state["step_ms_window"]
+                    window.append(step_ms)
+                    if len(window) > 8:
+                        window.pop(0)
+                state["last_time"] = now_t
+                avg_step_ms = (sum(state["step_ms_window"]) / len(state["step_ms_window"])) \
+                    if state["step_ms_window"] else None
+                t0 = now_t
                 try:
                     video = _video_stream(x0, latent_shapes)
                     if video is not None and video.ndim == 5:
                         pixel_frames = pixel_frames_from_latent_t(int(video.shape[2]))
+                        thinned = _pick_frames(video, self.preview_frames)
                         if self.decode_mode == DECODE_TAEH3 and tiny_vae_decoder is not None:
                             images = _tiny_vae_decode(tiny_vae_decoder, video, self.preview_frames)
+                        elif self.decode_mode == DECODE_VAE and self.vae is not None:
+                            images = _vae_decode(self.vae, thinned)
                         else:
-                            video = _pick_frames(video, self.preview_frames)
-                            if self.decode_mode == DECODE_VAE and self.vae is not None:
-                                images = _vae_decode(self.vae, video)
-                            else:
-                                images = to_rgb(video)
+                            images = to_rgb(thinned)
                         frames = _to_pil(images, self.max_resolution)
+
+                        # Δ: mean per-element magnitude of change since the last rendered
+                        # preview, on the same thinned tensor regardless of decode mode so
+                        # shapes line up step to step. A rough "how much is still moving"
+                        # signal for the graph, not tied to any one decode's own scale.
+                        delta = None
+                        x0_cpu_now = thinned.detach().float().cpu()
+                        prev_x0_cpu = state["last_x0_cpu"]
+                        if prev_x0_cpu is not None and prev_x0_cpu.shape == x0_cpu_now.shape:
+                            diff = x0_cpu_now - prev_x0_cpu
+                            delta = (diff.norm() / max(1, diff.numel()) ** 0.5).item()
+                        state["last_x0_cpu"] = x0_cpu_now
                         # The shot lasts pixel_frames / fps seconds. Spread however many
                         # frames we ended up with across exactly that long. Counting them
                         # after the decode matters: latent2rgb yields one image per latent
@@ -386,8 +441,10 @@ class _OuterSampleWrapper:
                         if to_node:
                             b64 = _encode_animated_webp(frames, rate, self.webp_quality)
                             if b64:
+                                sigma_val = sigmas_list[step] if 0 <= step < len(sigmas_list) else None
                                 self._send_to_node(b64, len(frames), step + 1, total_steps,
-                                                   int((time.time() - t0) * 1000), rate)
+                                                   int((time.time() - t0) * 1000), rate,
+                                                   sigma_val, delta, step_ms, avg_step_ms)
                         if vhs is not None:
                             vhs.send(frames, rate)
                         state["sent"] += len(frames)
