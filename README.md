@@ -12,7 +12,9 @@ A single ComfyUI custom node: **MiniMax H3 Preview Override**, combining
   latent2rgb speed).
 
 Wire it between your model and the sampler and watch the shot denoise on the node
-itself, with a choice of three decode modes.
+itself, with a choice of three decode modes. All of those decode/timing/output settings
+live behind a single **⚙ Settings** button on the node rather than as a stack of widget
+rows, so the node itself stays small — just the button and the live preview.
 
 ## Why this exists
 
@@ -83,9 +85,15 @@ nodes) delete `minimax_preview.py` and its `js/minimax_preview.js` counterpart f
 ComfyUI-MiniMaxH3-Director checkout so only this package's version of the Preview
 Override node is registered.
 
-## Widgets
+## Settings
 
-| Widget | What it does |
+Click **⚙ Settings** on the node to open a popup with every widget below — the node body
+itself only ever shows the live preview panel and the button. The popup edits the same
+underlying widget values ComfyUI always serialised (nothing about how a workflow saves
+or loads changed), so old saved workflows load their settings exactly as before; you
+just no longer scroll a tall stack of rows to see or change them.
+
+| Setting | What it does |
 |---|---|
 | `decode` | `latent2rgb (fast)`, `tiny vae (taeh3)` or `vae (quality)` — see the table above. |
 | `tiny_vae` | Which `models/vae_approx` checkpoint to use for `decode='tiny vae (taeh3)'`. `none` by default. |
