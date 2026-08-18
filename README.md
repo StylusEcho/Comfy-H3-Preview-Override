@@ -6,15 +6,17 @@ A single ComfyUI custom node: **MiniMax H3 Preview Override**, combining
   [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)
   (unpacks MiniMax H3's packed audio+video latent so the preview shows the whole shot,
   not just the first latent frame), with
-* the **taeh3** tiny-VAE decode path from
-  [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' Preview Override node
-  (a small trained temporal decoder for near-VAE colour accuracy at close to
-  latent2rgb speed).
+* the **taeh3** tiny-VAE decode path and the **interactive σ/Δ and step-time graphs**
+  from [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' Preview Override
+  node (a small trained temporal decoder for near-VAE colour accuracy at close to
+  latent2rgb speed, plus a live, scrubbable read on the sampler's noise schedule and how
+  much the shot is still changing).
 
 Wire it between your model and the sampler and watch the shot denoise on the node
-itself, with a choice of three decode modes. All of those decode/timing/output settings
-live behind a single **⚙ Settings** button on the node rather than as a stack of widget
-rows, so the node itself stays small — just the button and the live preview.
+itself, with a choice of three decode modes and a pair of interactive graphs underneath.
+All of the decode/timing/output settings live behind a single **⚙ Settings** button on
+the node rather than as a stack of widget rows, so the node itself stays small — just
+the button, the live preview, and the graphs.
 
 ## Why this exists
 
@@ -108,6 +110,33 @@ just no longer scroll a tall stack of rows to see or change them.
 | `suppress_default_preview` | Hides ComfyUI's built-in single-frame preview. |
 | `vae` | `minimax_h3_video_vae`. Only needed for `decode='vae (quality)'`. |
 
+## Interactive graphs
+
+Below the live preview image, two small graphs (ported from KJNodes' Preview Override)
+update alongside every rendered preview:
+
+* **σ / Δ** — the sampler's noise schedule (σ, dotted grey line, drawn in full up front)
+  overlaid with how much the shot is still changing (Δ, orange fill — the average
+  per-element magnitude of change in the previewed latent since the last rendered
+  preview). A flattening Δ against a still-high σ is often a sign a shot has converged
+  early; a Δ that's still spiking near the end of the schedule is worth a longer look.
+* **step time** — wall-clock time between rendered previews, with a click-to-toggle
+  ms/s label showing the average and an ETA for the rest of the run.
+
+Both graphs are interactive:
+
+| Action | Effect |
+|---|---|
+| Hover the σ/Δ graph | Scrub to any step; the header shows that step's exact σ/Δ values. |
+| Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again (or click elsewhere on the graph) to unlock. |
+| ← / → while hovering the graphs | Step the locked position one step at a time. |
+| Click the step-time graph (or its label/value) | Toggle the time readout between ms and s. |
+
+The graphs update on the same cadence the preview image does — `every_n_steps` and
+`max_preview_overhead` throttle both together, so a heavily throttled run's graphs show
+gaps between rendered steps rather than every single sampler step. At the default
+`every_n_steps=1` with no throttling, they're as fine-grained as the sampler itself.
+
 ## Getting a taeh3 checkpoint
 
 `tiny vae (taeh3)` needs a **taehv-format** decoder checkpoint whose latent shape
@@ -128,5 +157,11 @@ This node is a merge of two GPL-3.0 projects:
   [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director).
 * **The taeh3/tiny-VAE decoder loader** (`tiny_vae.py`) — ported near-verbatim from
   `nodes/tiny_vae.py` in [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes).
+* **The interactive σ/Δ and step-time graphs** (the canvas drawing and hover/lock/arrow-key
+  scrubbing in `js/minimax_h3_preview_override.js`) — ported from
+  `web/js/preview_override/preview_override.js` in
+  [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), with the SamplerDetailBoost
+  curve overlay and per-step image-frame cache/scrub left out (out of scope for this node;
+  it keeps a single always-current preview image instead).
 
 Both are licensed GNU GPLv3; this repository is too — see [LICENSE](LICENSE).
