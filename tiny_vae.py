@@ -189,7 +189,7 @@ def load_tiny_vae_decoder(name, device=None, dtype=None):
 
     path = folder_paths.get_full_path("vae_approx", name)
     if path is None:
-        logging.warning(f"[H3PreviewOverride] '{name}' not found in models/vae_approx.")
+        logging.warning(f"[H3PreviewPlus] '{name}' not found in models/vae_approx.")
         return None
     try:
         sd = comfy.utils.load_torch_file(path, safe_load=True)
@@ -197,5 +197,5 @@ def load_tiny_vae_decoder(name, device=None, dtype=None):
             return TAEHVDecoder(sd, device=device, dtype=dtype)
         return TinyVAEDecoder(sd, device=device, dtype=dtype)
     except Exception as e:
-        logging.warning(f"[H3PreviewOverride] Could not load '{name}': {e}")
+        logging.warning(f"[H3PreviewPlus] Could not load '{name}': {e}")
         return None

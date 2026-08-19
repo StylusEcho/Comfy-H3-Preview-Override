@@ -83,18 +83,18 @@ def _schema_inputs(node_cls):
     return [i.id for i in schema.inputs]
 
 
-node_cls = preview.MiniMaxH3PreviewOverride
+node_cls = preview.MiniMaxH3PreviewPlus
 params = inspect.signature(node_cls.execute.__func__).parameters
 accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 missing = [] if accepts_kwargs else [
     name for name in _schema_inputs(node_cls) if name not in params]
-check("MiniMaxH3PreviewOverride: every schema input has an execute() parameter", missing, [])
+check("MiniMaxH3PreviewPlus: every schema input has an execute() parameter", missing, [])
 
-# tiny_vae was added alongside taeh3 support and is a widget, not a socket that older
-# saved workflows already carry a value for — it has to be last, or a workflow saved
+# show_vae_input was added last (after tiny_vae) and is a widget, not a socket that older
+# saved workflows already carry a value for — it has to stay last, or a workflow saved
 # before it existed hands its saved values to the wrong widgets.
-check("tiny_vae is the last widget (positional-serialisation trap)",
-      _schema_inputs(node_cls)[-1], "tiny_vae")
+check("show_vae_input is the last widget (positional-serialisation trap)",
+      _schema_inputs(node_cls)[-1], "show_vae_input")
 decode_input = next(i for i in node_cls.define_schema().inputs if i.id == "decode")
 check("decode offers all three modes",
       list(decode_input.options),

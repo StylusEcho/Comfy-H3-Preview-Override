@@ -182,7 +182,7 @@ def _encode_animated_webp(frames, fps, quality):
                        duration=max(1, int(round(1000 / max(1, fps)))), loop=0,
                        quality=quality, method=0)
     except Exception as e:
-        log.warning("[H3PreviewOverride] animated WebP encode failed: %s", e)
+        log.warning("[H3PreviewPlus] animated WebP encode failed: %s", e)
         return None
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -322,14 +322,14 @@ class _OuterSampleWrapper:
                     seeded = _pick_frames(seeded, self.preview_frames)
                     last_x0_cpu = seeded.detach().float().cpu()
         except Exception as e:
-            log.warning("[H3PreviewOverride] initial delta seed failed: %s", e)
+            log.warning("[H3PreviewPlus] initial delta seed failed: %s", e)
 
         to_rgb = None
         if self.decode_mode != DECODE_VAE:
             try:
                 to_rgb = _RGBFactors(latent_format)
             except Exception as e:
-                log.warning("[H3PreviewOverride] preview unavailable: %s", e)
+                log.warning("[H3PreviewPlus] preview unavailable: %s", e)
 
         tiny_vae_decoder = None
         if self.decode_mode == DECODE_TAEH3:
@@ -338,7 +338,7 @@ class _OuterSampleWrapper:
                 channels = int(latent_shapes[0][1])
                 if channels != tiny_vae_decoder.latent_channels:
                     log.warning(
-                        "[H3PreviewOverride] tiny_vae '%s' decodes %d-channel latents but "
+                        "[H3PreviewPlus] tiny_vae '%s' decodes %d-channel latents but "
                         "this model's are %d-channel; falling back to latent2rgb.",
                         self.tiny_vae_name, tiny_vae_decoder.latent_channels, channels)
                     tiny_vae_decoder = None
@@ -346,7 +346,7 @@ class _OuterSampleWrapper:
                 try:
                     to_rgb = _RGBFactors(latent_format)
                 except Exception as e:
-                    log.warning("[H3PreviewOverride] preview unavailable: %s", e)
+                    log.warning("[H3PreviewPlus] preview unavailable: %s", e)
 
         vhs = _VHSStreamer(self.preview_fps) if self.target in (TARGET_SAMPLER, TARGET_BOTH) else None
 
@@ -361,7 +361,7 @@ class _OuterSampleWrapper:
         state = {"warned": False, "sent": 0, "cost": 0.0, "finished": 0.0, "anim": 0.0,
                  "throttle_logged": False, "cap_logged": False, "last_time": None,
                  "step_ms_window": [], "last_x0_cpu": last_x0_cpu}
-        log.info("[H3PreviewOverride] preview: %s, target=%s, <=%d frames @%d fps, max %dpx.",
+        log.info("[H3PreviewPlus] preview: %s, target=%s, <=%d frames @%d fps, max %dpx.",
                  self.decode_mode, self.target, self.preview_frames, self.preview_fps,
                  self.max_resolution)
 
@@ -426,7 +426,7 @@ class _OuterSampleWrapper:
                         if not state["cap_logged"] and self.playback == PLAYBACK_TRUE \
                                 and rate < self.preview_fps - 0.05:
                             state["cap_logged"] = True
-                            log.info("[H3PreviewOverride] preview plays at %.1f fps, not %.0f: "
+                            log.info("[H3PreviewPlus] preview plays at %.1f fps, not %.0f: "
                                      "%d frame(s) spread over the shot's %.2fs so it lasts as "
                                      "long as the finished clip. %s Switch playback to '%s' to "
                                      "play them at %.0f fps instead — the motion reads normally, "
@@ -454,7 +454,7 @@ class _OuterSampleWrapper:
                         if self.max_overhead > 0 and state["cost"] > 1.0 \
                                 and not state["throttle_logged"]:
                             state["throttle_logged"] = True
-                            log.info("[H3PreviewOverride] a preview costs %.1fs; holding it to "
+                            log.info("[H3PreviewPlus] a preview costs %.1fs; holding it to "
                                      "%d%% of the render, so previews will be spaced ~%.0fs "
                                      "apart. Lower preview_frames or max_resolution for more "
                                      "of them.", state["cost"], self.max_overhead,
@@ -463,7 +463,7 @@ class _OuterSampleWrapper:
                     # never take the generation down over a preview
                     if not state["warned"]:
                         state["warned"] = True
-                        log.warning("[H3PreviewOverride] preview failed, continuing without "
+                        log.warning("[H3PreviewPlus] preview failed, continuing without "
                                     "it: %r", e, exc_info=True)
             if original_cb is not None:
                 original_cb(step, x0, x, total_steps)
@@ -473,16 +473,16 @@ class _OuterSampleWrapper:
                            disable_pbar, seed, **kwargs)
         finally:
             latent_preview.LatentPreviewer.decode_latent_to_preview_image = original_decode
-        log.info("[H3PreviewOverride] preview rendered %d frames.", state["sent"])
+        log.info("[H3PreviewPlus] preview rendered %d frames.", state["sent"])
         return out
 
 
-class MiniMaxH3PreviewOverride(io.ComfyNode):
+class MiniMaxH3PreviewPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3PreviewOverrideCS",
-            display_name="MiniMax H3 Preview Override",
+            node_id="MiniMaxH3PreviewPlusCS",
+            display_name="MiniMax H3 Preview Plus",
             category="MiniMax H3",
             description=(
                 "Live preview of the whole shot while it denoises, shown on this node. "
@@ -560,6 +560,12 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
                                        "gets near-VAE colour accuracy at close to latent2rgb speed. A "
                                        "checkpoint with the wrong channel count is rejected at run "
                                        "time and the node falls back to latent2rgb."),
+                io.Boolean.Input("show_vae_input", default=True, optional=True,
+                                 tooltip="Show the 'vae' socket on the node face. Purely a JS-side "
+                                         "declutter toggle — turning it off hides (and disconnects) "
+                                         "the socket for when you're only using 'latent2rgb (fast)' "
+                                         "or 'tiny vae (taeh3)'; turn it back on and rewire before "
+                                         "switching to decode='vae (quality)'."),
             ],
             outputs=[io.Model.Output(tooltip="Model with the preview attached.")],
             hidden=[io.Hidden.unique_id],
@@ -569,16 +575,19 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
     def execute(cls, model, decode=DECODE_FAST, preview_target=TARGET_NODE, max_resolution=512,
                 preview_frames=24, preview_fps=24.0, playback=PLAYBACK_TRUE, webp_quality=80,
                 every_n_steps=1, max_preview_overhead=25, suppress_default_preview=True,
-                vae=None, tiny_vae="none") -> io.NodeOutput:
+                vae=None, tiny_vae="none", show_vae_input=True) -> io.NodeOutput:
+        # show_vae_input is JS-only (it toggles the socket's visibility on the node face) —
+        # accepted here only because ComfyUI passes every schema input by keyword.
+        del show_vae_input
         if decode == DECODE_VAE and vae is None:
             raise ValueError(
-                "MiniMax H3 Preview Override: decode is set to 'vae (quality)' but no VAE is "
+                "MiniMax H3 Preview Plus: decode is set to 'vae (quality)' but no VAE is "
                 "connected. Wire minimax_h3_video_vae into 'vae', or switch decode back to "
                 "'latent2rgb (fast)'."
             )
         if decode == DECODE_TAEH3 and (tiny_vae is None or tiny_vae == "none"):
             raise ValueError(
-                "MiniMax H3 Preview Override: decode is set to 'tiny vae (taeh3)' but no tiny "
+                "MiniMax H3 Preview Plus: decode is set to 'tiny vae (taeh3)' but no tiny "
                 "VAE is selected. Drop a taehv checkpoint trained for H3's 24-channel latent "
                 "(commonly named 'taeh3') into models/vae_approx and pick it from 'tiny_vae', "
                 "or switch decode back to 'latent2rgb (fast)'."
@@ -603,7 +612,7 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
         if wrapper not in registered and hasattr(m, "add_wrapper_with_key"):
             # a build that still reads the patcher-side dict; checking first avoids
             # registering twice and firing the preview for every step twice over
-            log.info("[H3PreviewOverride] using ModelPatcher-side wrapper registration.")
+            log.info("[H3PreviewPlus] using ModelPatcher-side wrapper registration.")
             m.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
                                    "minimax_h3_preview", wrapper)
         return io.NodeOutput(m)

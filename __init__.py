@@ -1,25 +1,25 @@
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
-from .minimax_h3_preview_override import MiniMaxH3PreviewOverride
+from .minimax_h3_preview_override import MiniMaxH3PreviewPlus
 
 
-class H3PreviewOverrideExtension(ComfyExtension):
+class H3PreviewPlusExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [MiniMaxH3PreviewOverride]
+        return [MiniMaxH3PreviewPlus]
 
 
-async def comfy_entrypoint() -> H3PreviewOverrideExtension:
-    return H3PreviewOverrideExtension()
+async def comfy_entrypoint() -> H3PreviewPlusExtension:
+    return H3PreviewPlusExtension()
 
 
 NODE_CLASS_MAPPINGS = {
-    "MiniMaxH3PreviewOverrideCS": MiniMaxH3PreviewOverride,
+    "MiniMaxH3PreviewPlusCS": MiniMaxH3PreviewPlus,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3PreviewOverrideCS": "MiniMax H3 Preview Override",
+    "MiniMaxH3PreviewPlusCS": "MiniMax H3 Preview Plus",
 }
 
 WEB_DIRECTORY = "./js"

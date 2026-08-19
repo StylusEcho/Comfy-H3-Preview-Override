@@ -1,6 +1,6 @@
 # Comfy-H3-Preview-Override
 
-A single ComfyUI custom node: **MiniMax H3 Preview Override**, combining
+A single ComfyUI custom node: **MiniMax H3 Preview Plus**, combining
 
 * the H3-aware live sampling preview from
   [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)
@@ -33,7 +33,10 @@ frame.
 ComfyUI-MiniMaxH3-Director's **MiniMax H3 Preview Override** node fixes the unpacking,
 but only offers `latent2rgb` and a full `vae` decode — nothing in between.
 
-This node does both: H3's packed-latent unpacking, plus all three decode modes.
+This node does both: H3's packed-latent unpacking, plus all three decode modes — under
+its own name and node ID (**MiniMax H3 Preview Plus** / `MiniMaxH3PreviewPlusCS`), distinct
+from the Director's own Preview Override node so the two packages can be installed
+side by side.
 
 ## Decode modes
 
@@ -74,26 +77,27 @@ git clone https://github.com/StylusEcho/Comfy-H3-Preview-Override.git
 
 ### Compatibility with ComfyUI-MiniMaxH3-Director
 
-This node registers under the **same node ID and display name**
-(`MiniMaxH3PreviewOverrideCS` / "MiniMax H3 Preview Override") as the Preview Override
-node shipped in ComfyUI-MiniMaxH3-Director, since it's meant as a drop-in replacement for
-it — existing workflows keep working, they just gain the `tiny_vae` decode option.
+This node registers under its **own node ID and display name**
+(`MiniMaxH3PreviewPlusCS` / "MiniMax H3 Preview Plus"), separate from the
+`MiniMaxH3PreviewOverrideCS` node shipped in ComfyUI-MiniMaxH3-Director — so you can
+install **both** packages together without a duplicate-node-name conflict. Use the
+Director for the Director, Retake Stitch, Enhance Prompt and Save Last Frame nodes, and
+drop this node in wherever you'd have used its Preview Override.
 
-If you install **both** packages, ComfyUI will load whichever one registers the class
-last and print a duplicate-node-name warning for the other; only one will actually run.
-Either disable one of the two packages in ComfyUI Manager, or (if you rely on the rest of
-the Director suite — the Director, Retake Stitch, Enhance Prompt and Save Last Frame
-nodes) delete `minimax_preview.py` and its `js/minimax_preview.js` counterpart from your
-ComfyUI-MiniMaxH3-Director checkout so only this package's version of the Preview
-Override node is registered.
+> Earlier commits on this repo's PR reused the Director's node ID as a drop-in
+> replacement. If you built a workflow against one of those, the node ID has since
+> changed to `MiniMaxH3PreviewPlusCS` — delete the old node and re-add "MiniMax H3
+> Preview Plus" from the node list; the widget values aren't recoverable automatically.
 
 ## Settings
 
 Click **⚙ Settings** on the node to open a popup with every widget below — the node body
-itself only ever shows the live preview panel and the button. The popup edits the same
-underlying widget values ComfyUI always serialised (nothing about how a workflow saves
-or loads changed), so old saved workflows load their settings exactly as before; you
-just no longer scroll a tall stack of rows to see or change them.
+itself only ever shows the live preview panel, the graphs and the button. The popup edits
+the same underlying widget values ComfyUI always serialised (nothing about how a
+workflow saves or loads changed), so old saved workflows load their settings exactly as
+before; you just no longer scroll a tall stack of rows to see or change them. Hover any
+row (or its control) for a mouseover caption explaining that setting — the same text is
+also shown underneath the row.
 
 | Setting | What it does |
 |---|---|
@@ -108,12 +112,16 @@ just no longer scroll a tall stack of rows to see or change them.
 | `every_n_steps` | Never preview more often than every N sampler steps. |
 | `max_preview_overhead` | Share of render time previews may use, in percent (default 25). After a preview costing C seconds the next waits `C·(100/P − 1)` s. 0 disables. |
 | `suppress_default_preview` | Hides ComfyUI's built-in single-frame preview. |
-| `vae` | `minimax_h3_video_vae`. Only needed for `decode='vae (quality)'`. |
+| `show_vae_input` | Shows or hides the `vae` socket on the node face. On by default; turn it off to declutter when you're only using `latent2rgb` or `tiny vae (taeh3)`. Turning it off **disconnects** any wired VAE (sockets don't have a "hidden but still linked" state), so switch it back on and rewire before using `decode='vae (quality)'`. |
+
+`vae` itself isn't a Settings-popup row — it's a socket (`minimax_h3_video_vae`), shown or
+hidden on the node face by `show_vae_input` above. Only needed for `decode='vae (quality)'`.
 
 ## Interactive graphs
 
-Below the live preview image, two small graphs (ported from KJNodes' Preview Override)
-update alongside every rendered preview:
+Below the live preview image, two small graphs sit **side by side** (ported from
+KJNodes' Preview Override, whose own panel lays them out the same way) and update
+alongside every rendered preview:
 
 * **σ / Δ** — the sampler's noise schedule (σ, dotted grey line, drawn in full up front)
   overlaid with how much the shot is still changing (Δ, orange fill — the average
@@ -123,6 +131,11 @@ update alongside every rendered preview:
 * **step time** — wall-clock time between rendered previews, with a click-to-toggle
   ms/s label showing the average and an ETA for the rest of the run.
 
+Drag the grip directly above the graphs to resize them **vertically** — the image area
+above shrinks or grows to compensate, and the chosen height is remembered on the node
+(same mechanism as KJNodes' own panel-height grip), so it survives saving and reloading
+the workflow.
+
 Both graphs are interactive:
 
 | Action | Effect |
@@ -131,6 +144,7 @@ Both graphs are interactive:
 | Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again (or click elsewhere on the graph) to unlock. |
 | ← / → while hovering the graphs | Step the locked position one step at a time. |
 | Click the step-time graph (or its label/value) | Toggle the time readout between ms and s. |
+| Drag the grip above the graphs | Resize the graphs panel vertically; persists across saves. |
 
 The graphs update on the same cadence the preview image does — `every_n_steps` and
 `max_preview_overhead` throttle both together, so a heavily throttled run's graphs show
@@ -157,8 +171,9 @@ This node is a merge of two GPL-3.0 projects:
   [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director).
 * **The taeh3/tiny-VAE decoder loader** (`tiny_vae.py`) — ported near-verbatim from
   `nodes/tiny_vae.py` in [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes).
-* **The interactive σ/Δ and step-time graphs** (the canvas drawing and hover/lock/arrow-key
-  scrubbing in `js/minimax_h3_preview_override.js`) — ported from
+* **The interactive σ/Δ and step-time graphs** (the canvas drawing, hover/lock/arrow-key
+  scrubbing, side-by-side layout, and the panel-height resize grip, all in
+  `js/minimax_h3_preview_override.js`) — ported from
   `web/js/preview_override/preview_override.js` in
   [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), with the SamplerDetailBoost
   curve overlay and per-step image-frame cache/scrub left out (out of scope for this node;
