@@ -4,11 +4,12 @@
 // (on every rendered preview) a Δ/step-time reading — we drop the WebP into a DOM widget
 // on the node and the graph data into a pair of interactive, side-by-side canvases below
 // it, ported from KJNodes' Preview Override node (github.com/kijai/ComfyUI-KJNodes):
-// hover a graph to scrub to any step, click to lock a step for inspection, ←/→ to step
-// while locked, click the step-time graph to toggle ms/s, and drag the grip above the
-// graphs to resize them vertically — same interaction as KJNodes' own panel-height grip.
-// The payload shape is identical for all three decode modes (latent2rgb, tiny vae/taeh3,
-// vae) — this file doesn't need to know which one produced a given frame.
+// hover either graph to scrub to any step, click to lock a step for inspection, ←/→ to
+// step while locked, click the step-time graph to toggle ms/s, drag the grip above the
+// graphs to resize them vertically, and use the "graphs" button on the status line to
+// hide them entirely. The payload shape is identical for all three decode modes
+// (latent2rgb, tiny vae/taeh3, vae) — this file doesn't need to know which one produced
+// a given frame.
 //
 // All of the node's schema widgets (decode, tiny_vae, preview_target, preview_frames,
 // ...) are pulled off the node body and shown in a popup instead, opened from a single
@@ -34,6 +35,12 @@ function fmt(n, d) {
 // Ported from KJNodes' preview_override.js, minus the SamplerDetailBoost curve overlay
 // (that's a different node's feature) and the per-step image-frame cache/scrub (this node
 // keeps a single always-current preview image rather than caching one per step).
+//
+// Both draw functions take `xSteps` — the step axis — as an explicit argument rather than
+// each deriving its own from whatever series it happens to hold. That is what keeps the
+// hover line under the cursor: hit-testing and drawing have to agree on the axis, and
+// when they derive it separately they disagree the moment one series is longer than the
+// other (deltas lag sigmas by a step, the time series lags deltas, and so on).
 
 function syncCanvasDPR(canvas) {
   const dpr = window.devicePixelRatio || 1;
@@ -60,17 +67,41 @@ function drawGridlines(ctx, W, H, padX, padY) {
   }
 }
 
+// Shared cursor overlay so both graphs mark the same step the same way.
+function drawCursors(ctx, xAt, padY, H, xSteps, hoverStep, lockedStep) {
+  if (lockedStep != null && lockedStep >= 0 && lockedStep < xSteps) {
+    const lx = xAt(lockedStep) + 0.5;
+    ctx.strokeStyle = "rgba(245, 200, 60, 0.9)";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 2]);
+    ctx.beginPath();
+    ctx.moveTo(lx, padY);
+    ctx.lineTo(lx, H - padY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (hoverStep != null && hoverStep >= 0 && hoverStep < xSteps) {
+    const hx = xAt(hoverStep) + 0.5;
+    ctx.strokeStyle = "rgba(208, 208, 208, 0.5)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(hx, padY);
+    ctx.lineTo(hx, H - padY);
+    ctx.stroke();
+  }
+}
+
 // σ + Δ overlaid; each series normalised to its own max for comparable shapes.
-function drawSigmaDeltaGraph(canvas, sigmas, deltas, step, totalSteps, hoverStep, lockedStep) {
+function drawSigmaDeltaGraph(canvas, sigmas, deltas, step, xSteps, hoverStep, lockedStep) {
   const { ctx, W, H } = syncCanvasDPR(canvas);
   const padX = GRAPH_PAD_X, padY = GRAPH_PAD_Y;
   const iW = W - 2 * padX, iH = H - 2 * padY;
   ctx.clearRect(0, 0, W, H);
   drawGridlines(ctx, W, H, padX, padY);
 
+  const axis = Math.max(1, xSteps);
+  const xAt = (i) => padX + (i / Math.max(1, axis - 1)) * iW;
   const n = sigmas?.length || 0;
-  const xSteps = Math.max(totalSteps || n, n, deltas?.length || 0);
-  const xAt = (i) => padX + (i / Math.max(1, xSteps - 1)) * iW;
 
   let sYAt = null;
   if (n > 1) {
@@ -85,20 +116,19 @@ function drawSigmaDeltaGraph(canvas, sigmas, deltas, step, totalSteps, hoverStep
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
-      const px = padX + (i / (n - 1)) * iW;
-      const py = sYAt(sigmas[i]);
+      const px = xAt(i), py = sYAt(sigmas[i]);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     }
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const i = Math.max(0, Math.min(n - 1, step));
-    const mx = padX + (i / Math.max(1, n - 1)) * iW;
-    const my = sYAt(sigmas[i]);
-    ctx.fillStyle = "#d0d0d0";
-    ctx.beginPath();
-    ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
-    ctx.fill();
+    if (step >= 0) {
+      const i = Math.max(0, Math.min(n - 1, step));
+      ctx.fillStyle = "#d0d0d0";
+      ctx.beginPath();
+      ctx.arc(xAt(i), sYAt(sigmas[i]), 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   let dYAt = null;
@@ -109,12 +139,11 @@ function drawSigmaDeltaGraph(canvas, sigmas, deltas, step, totalSteps, hoverStep
     dYAt = (v) => padY + (1 - v / dRange) * iH;
 
     // delta[i] is plotted at boundary (i+1); flat-extend delta[0] back to boundary 0.
-    const lastB = deltas.length;
     ctx.beginPath();
     ctx.moveTo(xAt(0), H - padY);
     ctx.lineTo(xAt(0), dYAt(deltas[0]));
     for (let i = 0; i < deltas.length; i++) ctx.lineTo(xAt(i + 1), dYAt(deltas[i]));
-    ctx.lineTo(xAt(lastB), H - padY);
+    ctx.lineTo(xAt(deltas.length), H - padY);
     ctx.closePath();
     ctx.fillStyle = "rgba(230, 126, 34, 0.15)";
     ctx.fill();
@@ -136,88 +165,90 @@ function drawSigmaDeltaGraph(canvas, sigmas, deltas, step, totalSteps, hoverStep
     }
   }
 
-  if (lockedStep != null && lockedStep >= 0 && lockedStep < xSteps) {
-    const lx = xAt(lockedStep) + 0.5;
-    ctx.strokeStyle = "rgba(245, 200, 60, 0.9)";
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([4, 2]);
-    ctx.beginPath();
-    ctx.moveTo(lx, padY);
-    ctx.lineTo(lx, H - padY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
+  drawCursors(ctx, xAt, padY, H, axis, hoverStep, lockedStep);
 
-  if (hoverStep != null && hoverStep >= 0 && hoverStep < xSteps) {
-    const hx = xAt(hoverStep) + 0.5;
-    ctx.strokeStyle = "rgba(208, 208, 208, 0.5)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(hx, padY);
-    ctx.lineTo(hx, H - padY);
-    ctx.stroke();
+  // Dots on the hovered step, so the value in the header has a visible anchor.
+  if (hoverStep != null && hoverStep >= 0 && hoverStep < axis) {
+    const hx = xAt(hoverStep) - 0.5;
     if (sYAt && hoverStep < n) {
       ctx.fillStyle = "#d0d0d0";
       ctx.beginPath();
-      ctx.arc(hx - 0.5, sYAt(sigmas[hoverStep]), 2.5, 0, Math.PI * 2);
+      ctx.arc(hx, sYAt(sigmas[hoverStep]), 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
     // delta[k-1] is plotted at boundary k.
     if (dYAt && hoverStep >= 1 && (hoverStep - 1) < deltas.length) {
       ctx.fillStyle = "#e67e22";
       ctx.beginPath();
-      ctx.arc(hx - 0.5, dYAt(deltas[hoverStep - 1]), 2.5, 0, Math.PI * 2);
+      ctx.arc(hx, dYAt(deltas[hoverStep - 1]), 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 }
 
-// totalSteps fixes the x-axis so the line grows left-to-right, not stretching to fill.
-function drawLineGraph(canvas, values, totalSteps) {
+// xSteps fixes the x-axis so the line grows left-to-right, not stretching to fill.
+function drawLineGraph(canvas, values, xSteps, hoverStep, lockedStep) {
   const { ctx, W, H } = syncCanvasDPR(canvas);
   const padX = GRAPH_PAD_X, padY = GRAPH_PAD_Y;
   const iW = W - 2 * padX, iH = H - 2 * padY;
   ctx.clearRect(0, 0, W, H);
   drawGridlines(ctx, W, H, padX, padY);
-  if (!values || values.length < 1) return;
 
-  let vMax = -Infinity, vMin = Infinity;
-  for (const v of values) { if (v > vMax) vMax = v; if (v < vMin) vMin = v; }
-  if (vMin > 0) vMin = 0;
-  const vRange = Math.max(vMax - vMin, 1e-6);
+  const axis = Math.max(1, xSteps);
+  const xAt = (i) => padX + (i / Math.max(1, axis - 1)) * iW;
 
-  const xSteps = Math.max(totalSteps || values.length, values.length);
+  if (values && values.length >= 1) {
+    let vMax = -Infinity, vMin = Infinity;
+    for (const v of values) { if (v > vMax) vMax = v; if (v < vMin) vMin = v; }
+    if (vMin > 0) vMin = 0;
+    const vRange = Math.max(vMax - vMin, 1e-6);
+    const yAt = (v) => padY + (1 - (v - vMin) / vRange) * iH;
 
-  ctx.beginPath();
-  ctx.moveTo(padX, H - padY);
-  for (let i = 0; i < values.length; i++) {
-    const px = padX + (i / Math.max(1, xSteps - 1)) * iW;
-    const py = padY + (1 - (values[i] - vMin) / vRange) * iH;
-    ctx.lineTo(px, py);
+    // values[i] is the wait before step i+1, so it plots at boundary i+1 — same
+    // convention as the Δ series, which keeps the two graphs' cursors aligned.
+    ctx.beginPath();
+    ctx.moveTo(xAt(0), H - padY);
+    ctx.lineTo(xAt(0), yAt(values[0]));
+    for (let i = 0; i < values.length; i++) ctx.lineTo(xAt(i + 1), yAt(values[i]));
+    ctx.lineTo(xAt(values.length), H - padY);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(230, 126, 34, 0.15)";
+    ctx.fill();
+
+    ctx.strokeStyle = "#e67e22";
+    ctx.lineWidth = 1.3;
+    if (values.length === 1) {
+      ctx.fillStyle = "#e67e22";
+      ctx.beginPath();
+      ctx.arc(xAt(1), yAt(values[0]), 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      for (let i = 0; i < values.length; i++) {
+        const px = xAt(i + 1), py = yAt(values[i]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    if (hoverStep != null && hoverStep >= 1 && (hoverStep - 1) < values.length) {
+      ctx.fillStyle = "#e67e22";
+      ctx.beginPath();
+      ctx.arc(xAt(hoverStep) - 0.5, yAt(values[hoverStep - 1]), 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
-  ctx.lineTo(padX + ((values.length - 1) / Math.max(1, xSteps - 1)) * iW, H - padY);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(230, 126, 34, 0.15)";
-  ctx.fill();
 
-  ctx.strokeStyle = "#e67e22";
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  for (let i = 0; i < values.length; i++) {
-    const px = padX + (i / Math.max(1, xSteps - 1)) * iW;
-    const py = padY + (1 - (values[i] - vMin) / vRange) * iH;
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-  }
-  ctx.stroke();
+  drawCursors(ctx, xAt, padY, H, axis, hoverStep, lockedStep);
 }
 
 // --------------------------------------------------------------------------- panel + grip
-// Layout: image area (flexes to fill leftover space) → status line → a drag grip → a
-// fixed-height graphs panel holding the two graph cells SIDE BY SIDE. Dragging the grip
-// resizes the graphs panel (shrinking/growing the image area to compensate) and persists
-// the chosen height on `node.properties`, exactly like KJNodes' own Preview Override
-// panel-height grip (`kjPovPanelH`) — properties round-trip through workflow save/load
-// automatically, independent of the widgets_values array.
+// Layout: image area (flexes to fill leftover space) → status line (with the graphs
+// show/hide button) → a drag grip → a fixed-height graphs panel holding the two graph
+// cells SIDE BY SIDE. Dragging the grip resizes the graphs panel (shrinking/growing the
+// image area to compensate) and persists the chosen height on `node.properties`, exactly
+// like KJNodes' own Preview Override panel-height grip (`kjPovPanelH`) — properties
+// round-trip through workflow save/load automatically, independent of widgets_values.
 
 const DEFAULT_GRAPHS_H = 130;
 const MIN_GRAPHS_H = 50;
@@ -251,19 +282,32 @@ function buildPanel(node) {
 
   const status = document.createElement("div");
   Object.assign(status.style, {
-    display: "flex", justifyContent: "space-between", gap: "8px", flex: "0 0 auto",
-    color: "#8a8a8a", fontSize: "10px", fontFamily: "monospace", padding: "0 2px",
+    display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px",
+    flex: "0 0 auto", color: "#8a8a8a", fontSize: "10px", fontFamily: "monospace",
+    padding: "0 2px",
   });
   const left = document.createElement("span");
   const right = document.createElement("span");
   left.textContent = "idle";
+  Object.assign(right.style, { flex: "1 1 auto", textAlign: "right" });
+
+  const graphsToggle = document.createElement("button");
+  Object.assign(graphsToggle.style, {
+    flex: "0 0 auto", background: "#242424", color: "#8a8a8a", border: "1px solid #333",
+    borderRadius: "3px", padding: "1px 6px", font: "10px monospace", cursor: "pointer",
+    pointerEvents: "auto",
+  });
+  graphsToggle.addEventListener("mouseenter", () => { graphsToggle.style.color = "#c0c0c0"; });
+  graphsToggle.addEventListener("mouseleave", () => { graphsToggle.style.color = "#8a8a8a"; });
+
   status.appendChild(left);
   status.appendChild(right);
+  status.appendChild(graphsToggle);
 
   const grip = document.createElement("div");
   Object.assign(grip.style, {
     flex: "0 0 6px", background: "#242424", cursor: "ns-resize",
-    borderRadius: "2px", position: "relative",
+    borderRadius: "2px", position: "relative", pointerEvents: "auto",
   });
   grip.title = "Drag to resize the graphs";
   const gripBar = document.createElement("div");
@@ -315,6 +359,9 @@ function buildPanel(node) {
     Object.assign(canvas.style, {
       flex: "1 1 auto", minHeight: "0", display: "block", width: "100%",
       cursor: cursor || "default",
+      // ComfyUI's DOM-widget container manages pointer-events for the node body; say so
+      // explicitly here or the graphs can end up inert depending on frontend version.
+      pointerEvents: "auto",
     });
     cell.appendChild(head);
     cell.appendChild(canvas);
@@ -323,12 +370,43 @@ function buildPanel(node) {
   }
   const sdRow = makeGraphCell(
     '<span style="color:#d0d0d0">σ</span> / <span style="color:#e67e22">Δ</span>', "crosshair");
-  const timeRow = makeGraphCell("step time (ms)", "pointer");
+  const timeRow = makeGraphCell("step time (ms)", "crosshair");
 
   node.properties = node.properties || {};
   if (typeof node.properties.h3ppGraphsH === "number") {
     graphsPanel.style.height = node.properties.h3ppGraphsH + "px";
   }
+
+  const panel = {
+    root, img, idle, left, right, graphs: graphsRow, graphsPanel, grip, graphsToggle,
+    sdRow, timeRow,
+    onGraphsShown: null,   // setupGraphs installs its redraw here
+  };
+
+  function setGraphsHidden(hidden, persist) {
+    grip.style.display = hidden ? "none" : "";
+    graphsPanel.style.display = hidden ? "none" : "";
+    graphsToggle.textContent = hidden ? "graphs ▸" : "graphs ▾";
+    graphsToggle.title = hidden ? "Show the σ/Δ and step-time graphs"
+                                : "Hide the σ/Δ and step-time graphs";
+    if (persist) {
+      node.properties.h3ppGraphsHidden = !!hidden;
+      node.graph?.change?.();
+    }
+    // A canvas laid out while display:none has no size, so anything drawn into it while
+    // hidden is lost. Redraw once the browser has given it a box again.
+    if (!hidden) requestAnimationFrame(() => panel.onGraphsShown?.());
+  }
+  panel.setGraphsHidden = setGraphsHidden;
+  setGraphsHidden(!!node.properties.h3ppGraphsHidden, false);
+
+  graphsToggle.addEventListener("mousedown", (e) => e.stopPropagation());
+  graphsToggle.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setGraphsHidden(graphsPanel.style.display !== "none", true);
+  });
+
   grip.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -343,6 +421,7 @@ function buildPanel(node) {
       const maxH = Math.max(MIN_GRAPHS_H, rootRect.height / scale - 80);
       const newH = Math.max(MIN_GRAPHS_H, Math.min(maxH, startH - dy));
       graphsPanel.style.height = newH + "px";
+      panel.onGraphsShown?.();
     };
     const up = () => {
       document.removeEventListener("mousemove", move);
@@ -358,7 +437,7 @@ function buildPanel(node) {
   root.appendChild(status);
   root.appendChild(grip);
   root.appendChild(graphsPanel);
-  return { root, img, idle, left, right, graphs: graphsRow, graphsPanel, sdRow, timeRow };
+  return panel;
 }
 
 // ------------------------------------------------------------------------- settings popup
@@ -557,20 +636,46 @@ function setupGraphs(node, panel) {
   let timeUnitSeconds = false;
   let lastAvgStepMs = null, lastStep = null, lastTotal = null;
 
+  // The step axis. Deliberately NOT gated on cachedSigmas: the σ schedule is sent once,
+  // up front, and if that single message is missed (or the graphs are reset between it
+  // and the first preview) scrubbing must still work off whatever series did arrive.
+  // Everything below hit-tests and draws against this one number.
+  function xStepCount() {
+    return Math.max(
+      totalSteps || 0,
+      cachedSigmas?.length || 0,
+      history.delta.length + 1,
+      history.stepMs.length + 1,
+      lastCurrentStep + 1,
+      1);
+  }
+
   function fmtTime(ms) {
     if (ms == null || !Number.isFinite(ms)) return "—";
     return timeUnitSeconds ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(0)}ms`;
   }
+  function activeStep() {
+    if (hoverStep != null) return hoverStep;
+    if (lockedStep != null) return lockedStep;
+    return lastCurrentStep;
+  }
+  function stepPrefix() {
+    if (hoverStep != null) return `[${hoverStep}] `;
+    if (lockedStep != null) return `🔒[${lockedStep}] `;
+    return "";
+  }
   // history.stepMs[k-1] = the wait before rendered step k.
   function stepTimeForDisplay() {
-    let idx = lockedStep != null ? lockedStep : (hoverStep != null ? hoverStep : lastCurrentStep);
-    const tIdx = idx - 1;
+    const tIdx = activeStep() - 1;
     return (tIdx >= 0 && tIdx < history.stepMs.length) ? history.stepMs[tIdx] : null;
   }
   function renderTimeHeader() {
     panel.timeRow.lbl.textContent = timeUnitSeconds ? "step time (s)" : "step time (ms)";
-    let text = fmtTime(stepTimeForDisplay());
-    if (lastAvgStepMs != null && lastTotal != null && lastStep != null) {
+    let text = stepPrefix() + fmtTime(stepTimeForDisplay());
+    // Only append the run-level summary when showing the live step; while scrubbing, the
+    // header belongs to the step under the cursor and the summary just crowds it out.
+    if (hoverStep == null && lockedStep == null
+        && lastAvgStepMs != null && lastTotal != null && lastStep != null) {
       const eta = Math.max(0, lastTotal - lastStep) * lastAvgStepMs / 1000;
       const avgTxt = timeUnitSeconds
         ? `${(lastAvgStepMs / 1000).toFixed(2)}s/render`
@@ -580,35 +685,25 @@ function setupGraphs(node, panel) {
     panel.timeRow.val.textContent = text;
   }
   function updateSdHeader() {
-    // Display priority: hover > locked > live. Hover gets [k] prefix, locked gets 🔒[k].
-    let idx = null, prefix = "";
-    if (hoverStep != null && cachedSigmas && hoverStep < cachedSigmas.length) {
-      idx = hoverStep;
-      prefix = `[${idx}] `;
-    } else if (lockedStep != null && cachedSigmas && lockedStep < cachedSigmas.length) {
-      idx = lockedStep;
-      prefix = `🔒[${idx}] `;
-    } else if (lastCurrentStep >= 0 && cachedSigmas) {
-      idx = Math.min(lastCurrentStep, cachedSigmas.length - 1);
-    }
-    if (idx == null) { panel.sdRow.val.textContent = ""; return; }
-    const sig = cachedSigmas[idx];
+    const idx = activeStep();
+    if (idx < 0) { panel.sdRow.val.textContent = ""; return; }
+    // σ may legitimately be unavailable (schedule message missed) while Δ is not —
+    // fmt() renders that as "—" rather than blanking the whole readout.
+    const sig = (cachedSigmas && idx < cachedSigmas.length) ? cachedSigmas[idx] : null;
     const dIdx = idx - 1;
     const d = (dIdx >= 0 && dIdx < history.delta.length) ? history.delta[dIdx] : null;
-    panel.sdRow.val.textContent = `${prefix}${fmt(sig, 3)} / ${fmt(d, 3)}`;
+    panel.sdRow.val.textContent = `${stepPrefix()}${fmt(sig, 3)} / ${fmt(d, 3)}`;
   }
   function redraw() {
+    const xSteps = xStepCount();
     drawSigmaDeltaGraph(panel.sdRow.canvas, cachedSigmas, history.delta, lastCurrentStep,
-      totalSteps, hoverStep, lockedStep);
-    drawLineGraph(panel.timeRow.canvas, history.stepMs, totalSteps);
+      xSteps, hoverStep, lockedStep);
+    drawLineGraph(panel.timeRow.canvas, history.stepMs, xSteps, hoverStep, lockedStep);
     updateSdHeader();
     renderTimeHeader();
   }
+  panel.onGraphsShown = redraw;
 
-  function xStepCount() {
-    return Math.max(totalSteps || cachedSigmas?.length || 0, cachedSigmas?.length || 0,
-      history.delta.length);
-  }
   function stepFromEvent(ev, canvas) {
     const rect = canvas.getBoundingClientRect();
     const iW = Math.max(1, rect.width - 2 * GRAPH_PAD_X);
@@ -617,26 +712,31 @@ function setupGraphs(node, panel) {
     return Math.max(0, Math.min(xSteps - 1, Math.round(fx * (xSteps - 1))));
   }
 
-  panel.sdRow.canvas.addEventListener("mousemove", (ev) => {
-    if (!cachedSigmas) return;
-    const idx = stepFromEvent(ev, panel.sdRow.canvas);
-    if (idx !== hoverStep) { hoverStep = idx; redraw(); }
-  });
-  panel.sdRow.canvas.addEventListener("mouseleave", () => {
-    if (hoverStep != null) { hoverStep = null; redraw(); }
-  });
-  panel.sdRow.canvas.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  // Scrubbing is bound to BOTH graphs and shares one hover/lock state, so the cursor
+  // tracks across the pair and it doesn't matter which one you happen to be over.
+  function attachScrub(cell) {
+    cell.canvas.addEventListener("mousemove", (ev) => {
+      const idx = stepFromEvent(ev, cell.canvas);
+      if (idx !== hoverStep) { hoverStep = idx; redraw(); }
+    });
+    cell.canvas.addEventListener("mouseleave", () => {
+      if (hoverStep != null) { hoverStep = null; redraw(); }
+    });
+    // Keep LiteGraph from starting a node-drag under the cursor.
+    cell.canvas.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  }
+  attachScrub(panel.sdRow);
+  attachScrub(panel.timeRow);
+
   panel.sdRow.canvas.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    if (lockedStep != null) {
-      lockedStep = null;
-    } else if (cachedSigmas) {
-      lockedStep = stepFromEvent(ev, panel.sdRow.canvas);
-    }
+    lockedStep = lockedStep != null ? null : stepFromEvent(ev, panel.sdRow.canvas);
     redraw();
   });
 
+  // The time graph scrubs like the other one, but its click is the ms/s toggle — the
+  // lock lives on the σ/Δ graph alone, matching KJNodes.
   const toggleTimeUnit = (ev) => {
     ev.stopPropagation();
     timeUnitSeconds = !timeUnitSeconds;
@@ -647,6 +747,8 @@ function setupGraphs(node, panel) {
   panel.timeRow.val.addEventListener("click", toggleTimeUnit);
   panel.timeRow.lbl.style.cursor = "pointer";
   panel.timeRow.val.style.cursor = "pointer";
+  panel.timeRow.canvas.title = "Hover to scrub · click to toggle ms ↔ s";
+  panel.sdRow.canvas.title = "Hover to scrub · click to lock a step · ← → to step";
 
   // Arrow-key scrub while locked, gated on hovering the graphs so global ComfyUI
   // shortcuts (e.g. arrow-key panning) aren't shadowed anywhere else on the canvas.
@@ -654,13 +756,13 @@ function setupGraphs(node, panel) {
   panel.graphs.addEventListener("mouseenter", () => { mouseOverGraphs = true; });
   panel.graphs.addEventListener("mouseleave", () => { mouseOverGraphs = false; });
   const onKey = (ev) => {
-    if (!mouseOverGraphs || !cachedSigmas) return;
+    if (!mouseOverGraphs) return;
     if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
     const xSteps = xStepCount();
     const cur = lockedStep != null ? lockedStep : (hoverStep != null ? hoverStep : lastCurrentStep);
     ev.preventDefault();
     ev.stopPropagation();
-    lockedStep = Math.max(0, Math.min(xSteps - 1, cur + (ev.key === "ArrowRight" ? 1 : -1)));
+    lockedStep = Math.max(0, Math.min(xSteps - 1, Math.max(0, cur) + (ev.key === "ArrowRight" ? 1 : -1)));
     redraw();
   };
   document.addEventListener("keydown", onKey, true);
@@ -783,11 +885,14 @@ app.registerExtension({
         w.value = fallback;
       }
 
-      // node.properties (including the graphs-panel height) is restored by the base
-      // configure() above; re-apply it to the actual DOM element here in case this node
-      // built its panel before that restore happened.
-      if (typeof this.properties?.h3ppGraphsH === "number" && this._mmxPreview?.graphsPanel) {
-        this._mmxPreview.graphsPanel.style.height = this.properties.h3ppGraphsH + "px";
+      // node.properties (graphs-panel height, graphs hidden) is restored by the base
+      // configure() above; re-apply it to the actual DOM here in case this node built its
+      // panel before that restore happened.
+      if (this._mmxPreview) {
+        if (typeof this.properties?.h3ppGraphsH === "number") {
+          this._mmxPreview.graphsPanel.style.height = this.properties.h3ppGraphsH + "px";
+        }
+        this._mmxPreview.setGraphsHidden?.(!!this.properties?.h3ppGraphsHidden, false);
       }
 
       // Reconcile the vae socket with the restored show_vae_input value — whatever the

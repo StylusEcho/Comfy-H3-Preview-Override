@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.1
+
+Bug fixes to the taeh3 preview span and to graph scrubbing, plus a graphs hide button.
+
+- **`decode='tiny vae (taeh3)'` previewed only the opening of the shot.** With the
+  default `preview_frames=24` against a ~37-frame latent it decoded `range(24)` — a
+  chronological prefix, i.e. the first ~65% of the clip — inheriting KJNodes'
+  cost-bounding behaviour. It compounded: `pixel_frames` is measured off the *full*
+  latent, so those prefix-only frames were then spread across the whole clip's duration,
+  making the preview both truncated and too slow. It now decodes the whole clip and
+  evenly subsamples the output, so the preview spans the finished shot like the other two
+  modes. `preview_frames` no longer bounds decode time for this mode (only transfer
+  size); use `every_n_steps` / `max_preview_overhead` instead.
+- **Hovering the graphs did nothing.** Scrubbing was gated on `cachedSigmas`, which is
+  only ever set by the single up-front σ-schedule message — miss it and hover was dead
+  for the whole run. It also hit-tested against a different x-axis than the draw code
+  derived internally, so the cursor line could land away from the pointer. The axis is
+  now computed once and passed to both, scrubbing is bound to *both* canvases sharing one
+  cursor, and it no longer depends on the σ message (an unknown σ renders as `—`).
+- Added a **graphs ▾** button on the status line that hides/shows the graphs; the state
+  persists on the node like the panel height does.
+
 ## 0.4.0
 
 **Breaking:** renamed the node and pack from "MiniMax H3 Preview Override" to
