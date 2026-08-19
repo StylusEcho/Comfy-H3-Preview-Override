@@ -46,14 +46,21 @@ side by side.
 | `tiny vae (taeh3)` | small, roughly latent2rgb speed | near-VAE colours | Needs a taehv-format checkpoint sized for H3 (24 latent channels, patch size 2 — commonly named `taeh3`) in `models/vae_approx`, picked via the `tiny_vae` widget. See [Getting a taeh3 checkpoint](#getting-a-taeh3-checkpoint) below. |
 | `vae (quality)` | real decode cost, tens of seconds per preview at high res | true colours | Needs `minimax_h3_video_vae` wired into `vae`. |
 
-`tiny vae (taeh3)` behaves a little differently from the other two when previewing the
-whole clip: because the decoder carries state frame-to-frame (it's a temporal model with
-memory blocks, not a per-frame matmul), asking for the full latent length triggers an
-H3-aware chunked decode that comes back at the *exact* real pixel-frame count H3 will
-actually output — better timing accuracy than either of the other two modes, for
-roughly the cost of `latent2rgb`. Asking for fewer frames than the full latent length
-(via `preview_frames`) decodes a chronological *prefix* of that length rather than an
-even thin across the clip, for the same reason.
+**All three modes always span the whole shot.** `preview_frames` controls how many images
+you get, thinned evenly across the entire clip — never a truncated opening section.
+
+`tiny vae (taeh3)` gets there differently from the other two. Because the decoder carries
+state frame to frame (it's a temporal model with memory blocks, not a per-frame matmul),
+a mid-clip frame can't be decoded without everything before it, so the latent *can't* be
+thinned before decoding the way it is for `latent2rgb`/`vae`. This node therefore decodes
+the full clip — which also yields the *exact* real pixel-frame count H3 will output, the
+best timing accuracy of the three modes — and subsamples the resulting images afterwards.
+
+The trade: for this mode `preview_frames` caps encode/transfer size but **not** decode
+time, since the full decode happens regardless. KJNodes' node makes the opposite choice,
+decoding only a prefix to bound its per-step cost; that shows the opening fraction of the
+shot, which defeats the purpose here. `every_n_steps` and `max_preview_overhead` are the
+cost knobs for this mode.
 
 ## Requirements
 
@@ -104,7 +111,7 @@ also shown underneath the row.
 | `decode` | `latent2rgb (fast)`, `tiny vae (taeh3)` or `vae (quality)` — see the table above. |
 | `tiny_vae` | Which `models/vae_approx` checkpoint to use for `decode='tiny vae (taeh3)'`. `none` by default. |
 | `preview_target` | `node` shows it on this node — always available. `sampler (VHS)` puts it in the sampler's usual preview slot and needs [VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) installed; `both` does both. |
-| `preview_frames` | Cap on **latent** frames used. Thinned evenly for `latent2rgb`/`vae`; taken as a chronological prefix for `tiny vae (taeh3)` (see above). The main cost knob. |
+| `preview_frames` | How many images to show, thinned evenly across the whole clip. For `latent2rgb`/`vae` the latent is thinned before decoding, so this is also the main cost knob; for `tiny vae (taeh3)` the full clip is decoded regardless, so it caps transfer size, not decode time (see above). |
 | `preview_fps` | The shot's frame rate. A FLOAT, so the Director's `fps` output wires straight in. |
 | `playback` | `true speed` (default) spreads the sampled frames across the shot's real length, so the preview lasts as long as the finished clip. `source fps` plays them at `preview_fps` flat, like ComfyUI's own preview. |
 | `max_resolution` | Long edge of the preview image, as a **target**. |
@@ -132,19 +139,26 @@ alongside every rendered preview:
   ms/s label showing the average and an ETA for the rest of the run.
 
 Drag the grip directly above the graphs to resize them **vertically** — the image area
-above shrinks or grows to compensate, and the chosen height is remembered on the node
-(same mechanism as KJNodes' own panel-height grip), so it survives saving and reloading
-the workflow.
+above shrinks or grows to compensate. The **graphs ▾** button on the status line hides
+them entirely when you just want the preview image. Both the chosen height and the
+hidden/shown state are remembered on the node (same mechanism as KJNodes' own
+panel-height grip), so they survive saving and reloading the workflow.
 
-Both graphs are interactive:
+Both graphs are interactive, and they share one cursor — scrubbing either one moves the
+marker on both:
 
 | Action | Effect |
 |---|---|
-| Hover the σ/Δ graph | Scrub to any step; the header shows that step's exact σ/Δ values. |
-| Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again (or click elsewhere on the graph) to unlock. |
+| Hover either graph | Scrub to any step; both headers show that step's values (σ/Δ on the left, step time on the right). |
+| Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again to unlock. |
 | ← / → while hovering the graphs | Step the locked position one step at a time. |
 | Click the step-time graph (or its label/value) | Toggle the time readout between ms and s. |
 | Drag the grip above the graphs | Resize the graphs panel vertically; persists across saves. |
+| **graphs ▾** button on the status line | Hide or show the graphs; persists across saves. |
+
+Scrubbing works off whatever data has arrived — it does not depend on the σ schedule
+message specifically, so the graphs stay usable even if that one-shot message is missed.
+A step whose σ is unknown shows `—` for σ rather than disabling the readout.
 
 The graphs update on the same cadence the preview image does — `every_n_steps` and
 `max_preview_overhead` throttle both together, so a heavily throttled run's graphs show

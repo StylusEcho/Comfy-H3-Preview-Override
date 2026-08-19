@@ -19,10 +19,11 @@ audio+video latent pack the way `MiniMax H3 Preview Override`
 `vae` modes — a `decode='tiny vae (taeh3)'` option that runs a small trained decoder
 (`tiny_vae.py`, ported from KJNodes) instead of either the single free matmul or the
 full, slow VAE. A taehv checkpoint trained for H3's 24-channel, patch-size-2 latent (a
-"taeh3" checkpoint) gets near-VAE colour accuracy at close to latent2rgb speed, and —
-when the whole clip is being previewed — the exact pixel-frame count H3 will actually
-output, because `TAEHVDecoder` in `tiny_vae.py` detects that shape and switches to H3's
-own 17-pixel-frames-per-5-latent-tokens chunking.
+"taeh3" checkpoint) gets near-VAE colour accuracy at close to latent2rgb speed, and the
+exact pixel-frame count H3 will actually output, because `TAEHVDecoder` in `tiny_vae.py`
+detects that shape and switches to H3's own 17-pixel-frames-per-5-latent-tokens chunking.
+Note that this node decodes the *whole* clip in that mode and subsamples afterwards,
+where KJNodes decodes only a prefix to bound its cost — see `_tiny_vae_decode`.
 
 The one non-obvious detail
 --------------------------
@@ -136,17 +137,28 @@ def _vae_decode(vae, video):
 def _tiny_vae_decode(decoder, video, preview_frames):
     """Tiny-VAE (taehv/taeh3) decode of [B, C, T, h, w] -> [N, h, w, 3] in 0..1.
 
-    Unlike `_pick_frames`, this does not evenly thin the latent before decoding: the
-    model carries state frame-to-frame (MemBlocks), so a mid-clip frame can only be
-    decoded by first decoding everything before it. Asking for the whole clip
-    (preview_frames <= 0 or >= the latent's frame count) decodes it properly and, for an
-    H3-shaped checkpoint, comes back at the exact real pixel-frame count. Asking for
-    fewer decodes a chronological prefix of that many latent frames instead of an even
-    spread across the clip.
+    Always decodes the WHOLE clip, then evenly thins the resulting pixel frames — it
+    never decodes a prefix of the latent.
+
+    The distinction matters and is the whole reason this node exists. The decoder chains
+    state frame to frame (MemBlocks), so a mid-clip frame cannot be decoded without
+    everything before it having been decoded first. The cheap way out is to decode only
+    the first `preview_frames` latent frames, which is what KJNodes' node does to bound
+    its per-step cost — but that shows the opening fraction of the shot and calls it the
+    preview. Worse here: `pixel_frames` is measured off the full latent, so those
+    prefix-only frames then get spread across the whole clip's duration, and the preview
+    reads as both truncated and too slow.
+
+    So this pays for the full decode instead — taeh3 is cheap enough that it is the right
+    trade — and subsamples afterwards. `preview_frames` therefore caps how many *images*
+    you get, spread across the entire shot, exactly as it does for the other two decode
+    modes; it no longer bounds the decode cost for this mode.
     """
-    t_total = int(video.shape[2])
-    frame_indices = None if preview_frames <= 0 or preview_frames >= t_total else list(range(preview_frames))
-    images = decoder.decode_video(video, frame_indices=frame_indices)
+    images = decoder.decode_video(video, frame_indices=None)
+    total = int(images.shape[0])
+    if preview_frames > 0 and total > preview_frames:
+        idx = torch.linspace(0, total - 1, preview_frames).round().long().unique()
+        images = images[idx]
     return images.clamp(0, 1).to(torch.float32).cpu()
 
 
@@ -501,9 +513,9 @@ class MiniMaxH3PreviewPlus(io.ComfyNode):
                                tooltip="latent2rgb is a single matmul — effectively free, rough colours. "
                                        "tiny vae (taeh3) runs a small trained decoder, picked in "
                                        "'tiny_vae' — near-VAE colour accuracy at close to latent2rgb "
-                                       "speed, and (when previewing the whole clip) the exact real "
-                                       "pixel-frame count. vae is the real decoder: true colours, but "
-                                       "it costs real time per preview, so raise every_n_steps with it."),
+                                       "speed, and the exact real pixel-frame count, so timing reads "
+                                       "true. vae is the real decoder: true colours, but it costs real "
+                                       "time per preview, so raise every_n_steps with it."),
                 io.Combo.Input("preview_target", options=[TARGET_NODE, TARGET_SAMPLER, TARGET_BOTH],
                                default=TARGET_NODE,
                                tooltip="Where the preview appears: on this node, in the sampler's usual "
@@ -514,12 +526,13 @@ class MiniMaxH3PreviewPlus(io.ComfyNode):
                                      "upscales — smooth, but soft. Use decode='vae (quality)' or "
                                      "'tiny vae (taeh3)' when you need to judge detail."),
                 io.Int.Input("preview_frames", default=24, min=1, max=512, step=1,
-                             tooltip="How many frames of the shot to show. With latent2rgb and vae, "
-                                     "frames are thinned evenly across the shot. With tiny vae "
-                                     "(taeh3), fewer than the shot's full latent length decodes a "
-                                     "chronological prefix instead — the model carries state "
-                                     "frame-to-frame, so a mid-clip frame needs everything before it "
-                                     "decoded first. Either way this caps the cost."),
+                             tooltip="How many frames of the shot to show, thinned evenly across "
+                                     "the whole clip so the preview always spans the finished "
+                                     "shot. For latent2rgb and vae this also caps the decode cost, "
+                                     "because the latent is thinned before decoding. For tiny vae "
+                                     "(taeh3) it does not: that decoder chains state frame to "
+                                     "frame, so the whole clip is decoded and then subsampled — "
+                                     "lower this to cut encode/transfer size, not decode time."),
                 io.Float.Input("preview_fps", default=24.0, min=1.0, max=60.0, step=1.0,
                                tooltip="The shot's own frame rate — 24 for H3. FLOAT so the "
                                        "Director's 'fps' output can be wired straight in. "
