@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+**Breaking:** renamed the node and pack from "MiniMax H3 Preview Override" to
+**"MiniMax H3 Preview Plus"** — node ID changed `MiniMaxH3PreviewOverrideCS` →
+`MiniMaxH3PreviewPlusCS`, and the pack's registry name changed to
+`minimaxh3-preview-plus`. Workflows built against the old node ID need that node
+deleted and re-added under its new name; widget values aren't carried over
+automatically. The upside: this node no longer shares an ID with
+ComfyUI-MiniMaxH3-Director's own Preview Override node, so the two packages can now be
+installed side by side without a duplicate-node-name conflict.
+
+Other changes:
+- The σ/Δ and step-time graphs now sit **side by side** instead of stacked, and a drag
+  grip above them resizes the graphs panel vertically (the image area shrinks/grows to
+  compensate) — same interaction as KJNodes' own Preview Override panel grip. The chosen
+  height persists on the node (`node.properties`), surviving save/reload.
+- Added a **`show_vae_input`** setting that shows or hides the `vae` socket on the node
+  face — a declutter toggle for when you're only using `latent2rgb` or `tiny vae
+  (taeh3)`. Turning it off disconnects any wired VAE, since a socket has no "hidden but
+  still linked" state.
+- Settings-popup rows now show a native mouseover tooltip (in addition to the existing
+  always-visible description line) explaining each setting.
+
 ## 0.3.0
 
 Added the interactive σ/Δ and step-time graphs from KJNodes' Preview Override node,

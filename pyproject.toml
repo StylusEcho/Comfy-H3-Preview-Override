@@ -1,7 +1,7 @@
 [project]
-name = "comfy-h3-preview-override"
-description = "MiniMax H3 Preview Override, combined with KJNodes' taeh3/tiny-VAE decode path: live, whole-shot sampling preview for MiniMax H3 with latent2rgb, taeh3 and full-VAE decode modes."
-version = "0.3.0"
+name = "minimaxh3-preview-plus"
+description = "MiniMax H3 Preview Plus: live, whole-shot sampling preview for MiniMax H3 with latent2rgb, taeh3 and full-VAE decode modes, interactive sigma/delta and step-time graphs, and a Settings popup."
+version = "0.4.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs.
@@ -19,7 +19,7 @@ Repository = "https://github.com/StylusEcho/Comfy-H3-Preview-Override"
 [tool.comfy]
 # Must match the publisher you create at https://registry.comfy.org
 PublisherId = "stylusecho"
-DisplayName = "MiniMax H3 Preview Override (taeh3)"
+DisplayName = "MiniMax H3 Preview Plus"
 Icon = ""
 # comfy_api.latest, the packed AV latent and H3 support all landed in ComfyUI 0.30.0;
 # the taeh3 decode path additionally needs a core build that ships comfy.taesd.taehv

@@ -1,25 +1,27 @@
-// In-node live preview for MiniMax H3 Preview Override.
+// In-node live preview for MiniMax H3 Preview Plus.
 // The Python side sends one animated WebP per rendered preview over the
 // "minimax_h3_preview" event, plus (once, up front) the σ schedule for the whole run and
 // (on every rendered preview) a Δ/step-time reading — we drop the WebP into a DOM widget
-// on the node and the graph data into an interactive canvas panel below it, ported from
-// KJNodes' Preview Override node (github.com/kijai/ComfyUI-KJNodes): hover the graph to
-// scrub to any step, click to lock a step for inspection, ←/→ to step while locked, click
-// the step-time row to toggle ms/s. The payload shape is identical for all three decode
-// modes (latent2rgb, tiny vae/taeh3, vae) — this file doesn't need to know which one
-// produced a given frame.
+// on the node and the graph data into a pair of interactive, side-by-side canvases below
+// it, ported from KJNodes' Preview Override node (github.com/kijai/ComfyUI-KJNodes):
+// hover a graph to scrub to any step, click to lock a step for inspection, ←/→ to step
+// while locked, click the step-time graph to toggle ms/s, and drag the grip above the
+// graphs to resize them vertically — same interaction as KJNodes' own panel-height grip.
+// The payload shape is identical for all three decode modes (latent2rgb, tiny vae/taeh3,
+// vae) — this file doesn't need to know which one produced a given frame.
 //
 // All of the node's schema widgets (decode, tiny_vae, preview_target, preview_frames,
 // ...) are pulled off the node body and shown in a popup instead, opened from a single
 // "⚙ Settings" button. This is a *display* change only: the same widget objects back
 // both the popup's controls and (as always) the values ComfyUI serialises into the
 // workflow and sends to the Python node — the popup just writes to `widget.value`
-// directly rather than the widget drawing its own row on the node.
+// directly rather than the widget drawing its own row on the node. The one exception is
+// `show_vae_input`, which also toggles the actual `vae` socket on the node face.
 
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
 
-const NODE_TYPE = "MiniMaxH3PreviewOverrideCS";
+const NODE_TYPE = "MiniMaxH3PreviewPlusCS";
 const IDLE_TEXT = "waiting for sample…";
 const GRAPH_PAD_X = 4;
 const GRAPH_PAD_Y = 3;
@@ -209,7 +211,18 @@ function drawLineGraph(canvas, values, totalSteps) {
   ctx.stroke();
 }
 
-function buildPanel() {
+// --------------------------------------------------------------------------- panel + grip
+// Layout: image area (flexes to fill leftover space) → status line → a drag grip → a
+// fixed-height graphs panel holding the two graph cells SIDE BY SIDE. Dragging the grip
+// resizes the graphs panel (shrinking/growing the image area to compensate) and persists
+// the chosen height on `node.properties`, exactly like KJNodes' own Preview Override
+// panel-height grip (`kjPovPanelH`) — properties round-trip through workflow save/load
+// automatically, independent of the widgets_values array.
+
+const DEFAULT_GRAPHS_H = 130;
+const MIN_GRAPHS_H = 50;
+
+function buildPanel(node) {
   const root = document.createElement("div");
   Object.assign(root.style, {
     display: "flex", flexDirection: "column", gap: "4px",
@@ -218,7 +231,7 @@ function buildPanel() {
 
   const frame = document.createElement("div");
   Object.assign(frame.style, {
-    position: "relative", width: "100%", minHeight: "140px", flex: "1",
+    position: "relative", width: "100%", minHeight: "100px", flex: "1 1 auto",
     background: "#141414", border: "1px solid #3a3a3a", borderRadius: "6px",
     display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
   });
@@ -238,7 +251,7 @@ function buildPanel() {
 
   const status = document.createElement("div");
   Object.assign(status.style, {
-    display: "flex", justifyContent: "space-between", gap: "8px",
+    display: "flex", justifyContent: "space-between", gap: "8px", flex: "0 0 auto",
     color: "#8a8a8a", fontSize: "10px", fontFamily: "monospace", padding: "0 2px",
   });
   const left = document.createElement("span");
@@ -247,20 +260,44 @@ function buildPanel() {
   status.appendChild(left);
   status.appendChild(right);
 
-  const graphs = document.createElement("div");
-  Object.assign(graphs.style, {
-    display: "flex", flexDirection: "column", gap: "5px", flex: "0 0 auto",
+  const grip = document.createElement("div");
+  Object.assign(grip.style, {
+    flex: "0 0 6px", background: "#242424", cursor: "ns-resize",
+    borderRadius: "2px", position: "relative",
   });
+  grip.title = "Drag to resize the graphs";
+  const gripBar = document.createElement("div");
+  Object.assign(gripBar.style, {
+    position: "absolute", left: "50%", top: "50%", width: "26px", height: "2px",
+    background: "#555", borderRadius: "1px", transform: "translate(-50%, -50%)",
+  });
+  grip.appendChild(gripBar);
+  grip.addEventListener("mouseenter", () => { gripBar.style.background = "#888"; });
+  grip.addEventListener("mouseleave", () => { gripBar.style.background = "#555"; });
+
+  const graphsPanel = document.createElement("div");
+  Object.assign(graphsPanel.style, {
+    flex: "0 0 auto", height: DEFAULT_GRAPHS_H + "px", minHeight: MIN_GRAPHS_H + "px",
+    boxSizing: "border-box",
+  });
+
+  // Side by side, like KJNodes' `kj-pov-graphs-grid`.
+  const graphsRow = document.createElement("div");
+  Object.assign(graphsRow.style, {
+    display: "flex", flexDirection: "row", gap: "5px", height: "100%", boxSizing: "border-box",
+  });
+  graphsPanel.appendChild(graphsRow);
 
   function makeGraphCell(labelHtml, cursor) {
     const cell = document.createElement("div");
     Object.assign(cell.style, {
-      display: "flex", flexDirection: "column", background: "#0e0e0e",
-      border: "1px solid #242424", borderRadius: "4px", overflow: "hidden",
+      flex: "1 1 0", minWidth: "0", display: "flex", flexDirection: "column",
+      background: "#0e0e0e", border: "1px solid #242424", borderRadius: "4px",
+      overflow: "hidden",
     });
     const head = document.createElement("div");
     Object.assign(head.style, {
-      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      flex: "0 0 auto", display: "flex", justifyContent: "space-between", alignItems: "baseline",
       padding: "2px 6px", background: "#181818", borderBottom: "1px solid #242424",
       fontSize: "10px", fontFamily: "monospace", gap: "6px",
     });
@@ -276,21 +313,52 @@ function buildPanel() {
     head.appendChild(val);
     const canvas = document.createElement("canvas");
     Object.assign(canvas.style, {
-      display: "block", width: "100%", height: "44px", cursor: cursor || "default",
+      flex: "1 1 auto", minHeight: "0", display: "block", width: "100%",
+      cursor: cursor || "default",
     });
     cell.appendChild(head);
     cell.appendChild(canvas);
-    graphs.appendChild(cell);
+    graphsRow.appendChild(cell);
     return { cell, lbl, val, canvas };
   }
   const sdRow = makeGraphCell(
     '<span style="color:#d0d0d0">σ</span> / <span style="color:#e67e22">Δ</span>', "crosshair");
   const timeRow = makeGraphCell("step time (ms)", "pointer");
 
+  node.properties = node.properties || {};
+  if (typeof node.properties.h3ppGraphsH === "number") {
+    graphsPanel.style.height = node.properties.h3ppGraphsH + "px";
+  }
+  grip.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const startH = graphsPanel.offsetHeight;
+    const move = (ev) => {
+      const scale = app.canvas?.ds?.scale || 1;
+      const dy = (ev.clientY - startY) / scale;
+      const rootRect = root.getBoundingClientRect();
+      // Leave the image area at least ~80px so it never fully collapses under the graphs.
+      const maxH = Math.max(MIN_GRAPHS_H, rootRect.height / scale - 80);
+      const newH = Math.max(MIN_GRAPHS_H, Math.min(maxH, startH - dy));
+      graphsPanel.style.height = newH + "px";
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      node.properties.h3ppGraphsH = graphsPanel.offsetHeight;
+      node.graph?.change?.();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+
   root.appendChild(frame);
   root.appendChild(status);
-  root.appendChild(graphs);
-  return { root, img, idle, left, right, graphs, sdRow, timeRow };
+  root.appendChild(grip);
+  root.appendChild(graphsPanel);
+  return { root, img, idle, left, right, graphs: graphsRow, graphsPanel, sdRow, timeRow };
 }
 
 // ------------------------------------------------------------------------- settings popup
@@ -315,14 +383,29 @@ function comboValues(widget) {
   return typeof v === "function" ? v(widget) : (v || []);
 }
 
-// One label + control (+ optional description) row per setting, built fresh each time
-// the popup opens so it always reflects the widget's current value.
+// `vae` is a socket (io.Vae.Input), not a widget, so "hide/show" means adding/removing
+// the actual input slot — there's no vanilla "hidden but still linked" state for a slot,
+// so removing it also drops any existing wire (documented in the setting's tooltip).
+function syncVaeInputVisibility(node, show) {
+  const idx = (node.inputs || []).findIndex((inp) => inp.name === "vae");
+  if (show) {
+    if (idx === -1) node.addInput("vae", "VAE");
+  } else if (idx !== -1) {
+    node.removeInput(idx);
+  }
+  node.setDirtyCanvas?.(true, true);
+}
+
+// One label + control (+ optional description, plus a native hover tooltip) per setting,
+// built fresh each time the popup opens so it always reflects the widget's current value.
 function buildSettingsRow(node, widget) {
   const row = document.createElement("div");
   Object.assign(row.style, {
     display: "flex", flexDirection: "column", gap: "3px",
     padding: "7px 0", borderBottom: "1px solid #2c2c2c",
   });
+  const tip = widgetTooltip(widget);
+  if (tip) row.title = tip; // mouseover caption, on top of the description line below
 
   const labelRow = document.createElement("div");
   Object.assign(labelRow.style, {
@@ -336,6 +419,7 @@ function buildSettingsRow(node, widget) {
   const commit = (value) => {
     widget.value = value;
     widget.callback?.(value, app.canvas, node);
+    if (widget.name === "show_vae_input") syncVaeInputVisibility(node, value);
     node.setDirtyCanvas?.(true, true);
     node.graph?.setDirtyCanvas?.(true, true);
   };
@@ -378,10 +462,10 @@ function buildSettingsRow(node, widget) {
     background: "#1c1c1c", color: "#eee", border: "1px solid #444", borderRadius: "4px",
     padding: "4px 6px", fontSize: "12px", minWidth: "150px", boxSizing: "border-box",
   });
+  if (tip) control.title = tip;
   labelRow.appendChild(control);
   row.appendChild(labelRow);
 
-  const tip = widgetTooltip(widget);
   if (tip) {
     const desc = document.createElement("div");
     desc.textContent = tip;
@@ -426,7 +510,7 @@ function openSettingsModal(node) {
     padding: "10px 14px", borderBottom: "1px solid #333", flex: "none",
   });
   const title = document.createElement("div");
-  title.textContent = "MiniMax H3 Preview Override — Settings";
+  title.textContent = "MiniMax H3 Preview Plus — Settings";
   Object.assign(title.style, { color: "#fff", fontSize: "13px", fontWeight: "700" });
   const closeBtn = document.createElement("button");
   closeBtn.textContent = "×";
@@ -598,7 +682,7 @@ function setupGraphs(node, panel) {
       if (data.step != null) { lastStep = data.step; lastCurrentStep = data.step; }
       redraw();
     } catch (err) {
-      console.warn("[H3PreviewOverride] graph update failed:", err);
+      console.warn("[H3PreviewPlus] graph update failed:", err);
     }
   }
   function reset() {
@@ -619,7 +703,7 @@ function setupGraphs(node, panel) {
 }
 
 app.registerExtension({
-  name: "MiniMaxH3PreviewOverrideCS",
+  name: "MiniMaxH3PreviewPlusCS",
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_TYPE) return;
@@ -639,10 +723,17 @@ app.registerExtension({
       const settingsBtn = this.addWidget("button", "⚙ Settings", null,
         () => openSettingsModal(this));
       settingsBtn.serialize = false;
+      settingsBtn.tooltip = "Open all of this node's settings: decode mode, tiny_vae "
+        + "checkpoint, preview target/timing/output, and whether the vae socket shows.";
 
-      const panel = buildPanel();
+      const panel = buildPanel(this);
       this._mmxPreview = panel;
       this._mmxGraphs = setupGraphs(this, panel);
+
+      // Reflect the show_vae_input widget's starting value (its default, or a value a
+      // saved workflow already restored onto it if this fires after configure).
+      const showVaeWidget = this._h3SettingsWidgets.find((w) => w.name === "show_vae_input");
+      if (showVaeWidget) syncVaeInputVisibility(this, showVaeWidget.value);
 
       // Height is declared through the DOM-widget layout API, not through computeSize.
       //
@@ -651,8 +742,10 @@ app.registerExtension({
       // measured against the size you are trying to leave, and the node can only ever
       // grow. Core's multiline textarea sidesteps that by declaring a minHeight and no
       // maxHeight, which lets the layout engine hand it the leftover space instead. Same
-      // deal here: one floor, no ceiling, resizable in both directions.
-      const MIN_PREVIEW_H = 260; // image + status line + the two graph cells
+      // deal here: one floor, no ceiling, resizable in both directions. The graphs panel's
+      // own resize (the grip) happens *within* this floor — it reallocates space between
+      // the image and the graphs, it doesn't grow the node on its own.
+      const MIN_PREVIEW_H = 220;
       const widget = this.addDOMWidget("minimax_preview_ui", "minimax_preview_ui", panel.root, {
         getValue: () => "",
         setValue: () => {},
@@ -661,9 +754,10 @@ app.registerExtension({
       widget.serialize = false;
 
       // Everything that used to take a widget row is in the popup now, so the node only
-      // needs to fit the button and the preview + graphs panel.
-      if (this.size[0] < 320) this.size[0] = 320;
-      if (this.size[1] < 380) this.size[1] = 380;
+      // needs to fit the button and the preview + graphs panel. Wide enough for two
+      // side-by-side graph cells to stay readable.
+      if (this.size[0] < 360) this.size[0] = 360;
+      if (this.size[1] < 420) this.size[1] = 420;
     };
 
     // Heal combo widgets whose saved value is not one of their options.
@@ -683,11 +777,24 @@ app.registerExtension({
         if (opts.includes(w.value)) continue;
         const fallback = w.options?.default ?? opts[0];
         console.warn(
-          `[H3PreviewOverride] ${NODE_TYPE}: saved value ${JSON.stringify(w.value)} is not a ` +
+          `[H3PreviewPlus] ${NODE_TYPE}: saved value ${JSON.stringify(w.value)} is not a ` +
           `valid '${w.name}' — this workflow was saved against a different widget layout. ` +
           `Falling back to ${JSON.stringify(fallback)}; check the node's settings.`);
         w.value = fallback;
       }
+
+      // node.properties (including the graphs-panel height) is restored by the base
+      // configure() above; re-apply it to the actual DOM element here in case this node
+      // built its panel before that restore happened.
+      if (typeof this.properties?.h3ppGraphsH === "number" && this._mmxPreview?.graphsPanel) {
+        this._mmxPreview.graphsPanel.style.height = this.properties.h3ppGraphsH + "px";
+      }
+
+      // Reconcile the vae socket with the restored show_vae_input value — whatever the
+      // base configure() did with node.inputs, this makes the actual socket state match
+      // the setting deterministically.
+      const showVaeWidget = (this.widgets || []).find((w) => w.name === "show_vae_input");
+      if (showVaeWidget) syncVaeInputVisibility(this, showVaeWidget.value);
 
       // A workflow saved by an older version of this node (before settings moved into
       // the popup, or before the graphs existed) may carry a stored size smaller than
