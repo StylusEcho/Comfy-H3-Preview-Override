@@ -1,196 +1,186 @@
 # Comfy-H3-Preview-Override
 
-A single ComfyUI custom node: **MiniMax H3 Preview Plus**, combining
+**H3 Preview Override** — [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)'
+Preview Override node, ported to MiniMax H3.
 
-* the H3-aware live sampling preview from
-  [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)
-  (unpacks MiniMax H3's packed audio+video latent so the preview shows the whole shot,
-  not just the first latent frame), with
-* the **taeh3** tiny-VAE decode path and the **interactive σ/Δ and step-time graphs**
-  from [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' Preview Override
-  node (a small trained temporal decoder for near-VAE colour accuracy at close to
-  latent2rgb speed, plus a live, scrubbable read on the sampler's noise schedule and how
-  much the shot is still changing).
-
-Wire it between your model and the sampler and watch the shot denoise on the node
-itself, with a choice of three decode modes and a pair of interactive graphs underneath.
-All of the decode/timing/output settings live behind a single **⚙ Settings** button on
-the node rather than as a stack of widget rows, so the node itself stays small — just
-the button, the live preview, and the graphs.
+Wire it between your model and the sampler and watch the *whole shot* denoise on the node
+itself: a scrubbable per-step frame history, live σ/Δ and step-time graphs, three decode
+modes, and playback that runs at the clip's real speed.
 
 ## Why this exists
 
 ComfyUI core ships `latent_rgb_factors` for MiniMax H3, so a preview isn't *missing* —
-but core's own previewer renders `x0[0, :, 0]`, the first latent frame only, so you
-watch one frozen still while a five-second shot samples.
+but core's own previewer renders `x0[0, :, 0]`, the first latent frame only, so you watch
+one frozen still while a five-second shot samples.
 
-KJNodes' **Model Preview Override** already solves the "show the whole clip" problem
-well, including an optional taeh3/taehv tiny-VAE decode — but its video paths are gated
-on LTX-specific checks (`_is_ltx_latent_format`, `_is_ltx2_diffusion_model`), and nothing
-there unpacks H3's packed AV latent. On MiniMax it falls through to the same single
+KJNodes' **Model Preview Override** solves the "show the whole clip" problem properly,
+including a taeh3/taehv tiny-VAE decode path — but its video paths are gated on
+LTX-specific checks (`_is_ltx_latent_format`, `_is_ltx2_diffusion_model`), and nothing in
+it unpacks H3's packed audio+video latent. On MiniMax it falls through to the same single
 frame.
 
-ComfyUI-MiniMaxH3-Director's **MiniMax H3 Preview Override** node fixes the unpacking,
-but only offers `latent2rgb` and a full `vae` decode — nothing in between.
-
-This node does both: H3's packed-latent unpacking, plus all three decode modes — under
-its own name and node ID (**MiniMax H3 Preview Plus** / `MiniMaxH3PreviewPlusCS`), distinct
-from the Director's own Preview Override node so the two packages can be installed
-side by side.
+This is that node with the H3 gaps filled in. Kijai's structure and behaviour are kept
+wholesale; see [Attribution](#attribution) for exactly what changed.
 
 ## Decode modes
 
 | `decode` | Cost | Quality | Notes |
 |---|---|---|---|
 | `latent2rgb (fast)` | ~free (one matmul) | rough colours | Default. Always available, no extra files. |
-| `tiny vae (taeh3)` | small, roughly latent2rgb speed | near-VAE colours | Needs a taehv-format checkpoint sized for H3 (24 latent channels, patch size 2 — commonly named `taeh3`) in `models/vae_approx`, picked via the `tiny_vae` widget. See [Getting a taeh3 checkpoint](#getting-a-taeh3-checkpoint) below. |
+| `tiny vae (taeh3)` | small, roughly latent2rgb speed | near-VAE colours | Needs a taehv-format checkpoint sized for H3 (24 latent channels, patch size 2 — commonly named `taeh3`) in `models/vae_approx`, picked with `tiny_vae`. See [Getting a taeh3 checkpoint](#getting-a-taeh3-checkpoint). |
 | `vae (quality)` | real decode cost, tens of seconds per preview at high res | true colours | Needs `minimax_h3_video_vae` wired into `vae`. |
 
-**All three modes always span the whole shot.** `preview_frames` controls how many images
-you get, thinned evenly across the entire clip — never a truncated opening section.
+**All three modes span the whole shot.** `preview_frames` is how many frames to show,
+spread evenly from the first frame of the clip to the last — never a truncated opening
+section.
 
-`tiny vae (taeh3)` gets there differently from the other two. Because the decoder carries
-state frame to frame (it's a temporal model with memory blocks, not a per-frame matmul),
-a mid-clip frame can't be decoded without everything before it, so the latent *can't* be
-thinned before decoding the way it is for `latent2rgb`/`vae`. This node therefore decodes
-the full clip — which also yields the *exact* real pixel-frame count H3 will output, the
-best timing accuracy of the three modes — and subsamples the resulting images afterwards.
+For `latent2rgb` and `vae` the latent is thinned *before* decoding, so `preview_frames` is
+also the main cost knob. `tiny vae (taeh3)` can't work that way: the decoder chains state
+frame to frame (memory blocks), so a mid-clip frame can't be produced without decoding
+everything before it. Kijai's node decodes a chronological prefix there to bound per-step
+cost; this one decodes the full clip and subsamples the output instead, because a prefix
+shows the opening fraction of the shot and calls it the preview. So for that mode
+`preview_frames` caps transfer size, not decode time — use `every_n_steps` and
+`max_preview_overhead` as the cost knobs.
 
-The trade: for this mode `preview_frames` caps encode/transfer size but **not** decode
-time, since the full decode happens regardless. KJNodes' node makes the opposite choice,
-decoding only a prefix to bound its per-step cost; that shows the opening fraction of the
-shot, which defeats the purpose here. `every_n_steps` and `max_preview_overhead` are the
-cost knobs for this mode.
+## True speed
+
+There is no frame-rate widget. The playback rate is derived from the shot's real duration,
+ported from
+[ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)'s
+preview node:
+
+* **`true speed`** (default) — the previewed frames are spread across the clip's real
+  length, so the preview lasts exactly as long as the finished video. H3 compresses time
+  ~3.35× in the latent (17 pixel frames per 5 latent tokens), so with `latent2rgb` — one
+  image per latent frame — this caps at about 24 / 3.35 ≈ 7.2 fps. That is not a setting
+  being ignored; it's what honest timing looks like at that frame budget. Raise
+  `preview_frames`, or use `tiny vae (taeh3)`, to push it up.
+* **`source fps`** — plays at H3's native 24 flat, like ComfyUI's own preview and most
+  other packs: motion reads at normal speed, but the clip is over in a third of the time.
+
+Judge timing with the first, movement with the second.
+
+## The panel
+
+| Action | Effect |
+|---|---|
+| Hover either graph | Scrub to any step; both headers show that step's values, and the preview jumps to that step's cached frames. |
+| Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again to unlock. |
+| ← / → over the panel | Step the locked position one step at a time. |
+| Click the step-time graph | Toggle the readout between ms and s. |
+| Click the preview image | Pause/resume playback (animated content only). |
+| Space over the panel | Same as clicking the image. |
+| Drag the scrub bar | Seek within the clip. |
+| Drag the grip above the panel | Resize the graph panel; persists across saves. |
+| **▾ / ▸** in the panel header | Collapse the graphs to just the header, handing the space back to the preview. Persists across saves. |
+
+The graphs:
+
+* **σ / Δ** — the sampler's noise schedule (σ, dotted grey, drawn in full up front)
+  overlaid with how much the shot is still changing (Δ, orange — the average per-element
+  change in the previewed latent since the last rendered preview). A flattening Δ against
+  a still-high σ often means the shot converged early.
+* **step time** — wall-clock time between rendered previews, with the average and an ETA
+  in the panel header.
+
+Scrubbing works off whatever data has arrived; it doesn't depend on the one-shot σ
+schedule message, and a step with no known σ shows `—` rather than disabling the readout.
+
+## Widgets
+
+| Widget | What it does |
+|---|---|
+| `decode` | `latent2rgb (fast)`, `tiny vae (taeh3)` or `vae (quality)` — see above. |
+| `playback` | `true speed` (default) or `source fps` — see above. |
+| `preview_target` | `node` shows it here — always available. `sampler (VHS)` puts it in the sampler's usual preview slot and needs [VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite); `both` does both. |
+| `preview_frames` | How many frames to show, spread evenly across the whole clip. |
+| `max_resolution` | Max preview side in pixels. `0` = full decoded resolution, no downscale. |
+| `jpeg_quality` | Quality for the preview transport (JPEG for a single frame, WebP for an animation). Ignored when NVENC MP4 encoding is used. |
+| `every_n_steps` | Never preview more often than every N sampler steps. |
+| `max_preview_overhead` | Share of render time previews may use, in percent (default 25). After a preview costing C seconds the next waits `C·(100/P − 1)` s. `0` disables. |
+| `suppress_default_preview` | Suppress ComfyUI's built-in single-frame preview while this runs. |
+| `tiny_vae` | Which `models/vae_approx` checkpoint to use for `decode='tiny vae (taeh3)'`. |
+| `vae` (socket) | `minimax_h3_video_vae`. Only needed for `decode='vae (quality)'`. |
+
+**Get H3 Preview Frames** is a second node that returns everything captured during the
+last run as an IMAGE batch — one frame per rendered preview, so it reads as a timelapse of
+the shot converging. Wire `model` from H3 Preview Override and `after_sample` from
+anything after the sampler to force the execution order.
 
 ## Requirements
 
 * **ComfyUI ≥ 0.30.0** — H3 support, `comfy_api.latest` and the packed AV latent all
   landed in 0.30.
-* For `decode='tiny vae (taeh3)'`: a ComfyUI core build that ships `comfy.taesd.taehv`
-  (the same recent releases that added TAEHV/LTX2 video previews to core). If it's
-  missing, the node logs a warning and falls back to `latent2rgb` at run time — it does
-  not error out.
+* For `decode='tiny vae (taeh3)'`: a core build shipping `comfy.taesd.taehv` (the same
+  releases that added TAEHV/LTX2 video previews). If it's missing the node logs a warning
+  and falls back to `latent2rgb` — it does not error out.
 * **Python 3.10+** (ComfyUI's own environment).
-* **No extra pip packages.** Everything imported ships with ComfyUI already.
+* **No extra pip packages.** PyAV is optional: if it's present *and* built with NVENC,
+  previews are encoded as MP4 (roughly 8× faster and 5× smaller); otherwise animated WebP
+  is used, which is always available through Pillow.
 
 ## Installation
-
-Clone into your `custom_nodes` folder and restart ComfyUI:
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/StylusEcho/Comfy-H3-Preview-Override.git
 ```
 
-### Compatibility with ComfyUI-MiniMaxH3-Director
+Then restart ComfyUI and reload the browser tab.
 
-This node registers under its **own node ID and display name**
-(`MiniMaxH3PreviewPlusCS` / "MiniMax H3 Preview Plus"), separate from the
-`MiniMaxH3PreviewOverrideCS` node shipped in ComfyUI-MiniMaxH3-Director — so you can
-install **both** packages together without a duplicate-node-name conflict. Use the
-Director for the Director, Retake Stitch, Enhance Prompt and Save Last Frame nodes, and
-drop this node in wherever you'd have used its Preview Override.
-
-> Earlier commits on this repo's PR reused the Director's node ID as a drop-in
-> replacement. If you built a workflow against one of those, the node ID has since
-> changed to `MiniMaxH3PreviewPlusCS` — delete the old node and re-add "MiniMax H3
-> Preview Plus" from the node list; the widget values aren't recoverable automatically.
-
-## Settings
-
-Click **⚙ Settings** on the node to open a popup with every widget below — the node body
-itself only ever shows the live preview panel, the graphs and the button. The popup edits
-the same underlying widget values ComfyUI always serialised (nothing about how a
-workflow saves or loads changed), so old saved workflows load their settings exactly as
-before; you just no longer scroll a tall stack of rows to see or change them. Hover any
-row (or its control) for a mouseover caption explaining that setting — the same text is
-also shown underneath the row.
-
-| Setting | What it does |
-|---|---|
-| `decode` | `latent2rgb (fast)`, `tiny vae (taeh3)` or `vae (quality)` — see the table above. |
-| `tiny_vae` | Which `models/vae_approx` checkpoint to use for `decode='tiny vae (taeh3)'`. `none` by default. |
-| `preview_target` | `node` shows it on this node — always available. `sampler (VHS)` puts it in the sampler's usual preview slot and needs [VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) installed; `both` does both. |
-| `preview_frames` | How many images to show, thinned evenly across the whole clip. For `latent2rgb`/`vae` the latent is thinned before decoding, so this is also the main cost knob; for `tiny vae (taeh3)` the full clip is decoded regardless, so it caps transfer size, not decode time (see above). |
-| `preview_fps` | The shot's frame rate. A FLOAT, so the Director's `fps` output wires straight in. |
-| `playback` | `true speed` (default) spreads the sampled frames across the shot's real length, so the preview lasts as long as the finished clip. `source fps` plays them at `preview_fps` flat, like ComfyUI's own preview. |
-| `max_resolution` | Long edge of the preview image, as a **target**. |
-| `webp_quality` | Quality of the animation sent to the browser. |
-| `every_n_steps` | Never preview more often than every N sampler steps. |
-| `max_preview_overhead` | Share of render time previews may use, in percent (default 25). After a preview costing C seconds the next waits `C·(100/P − 1)` s. 0 disables. |
-| `suppress_default_preview` | Hides ComfyUI's built-in single-frame preview. |
-| `show_vae_input` | Shows or hides the `vae` socket on the node face. On by default; turn it off to declutter when you're only using `latent2rgb` or `tiny vae (taeh3)`. Turning it off **disconnects** any wired VAE (sockets don't have a "hidden but still linked" state), so switch it back on and rewire before using `decode='vae (quality)'`. |
-
-`vae` itself isn't a Settings-popup row — it's a socket (`minimax_h3_video_vae`), shown or
-hidden on the node face by `show_vae_input` above. Only needed for `decode='vae (quality)'`.
-
-## Interactive graphs
-
-Below the live preview image, two small graphs sit **side by side** (ported from
-KJNodes' Preview Override, whose own panel lays them out the same way) and update
-alongside every rendered preview:
-
-* **σ / Δ** — the sampler's noise schedule (σ, dotted grey line, drawn in full up front)
-  overlaid with how much the shot is still changing (Δ, orange fill — the average
-  per-element magnitude of change in the previewed latent since the last rendered
-  preview). A flattening Δ against a still-high σ is often a sign a shot has converged
-  early; a Δ that's still spiking near the end of the schedule is worth a longer look.
-* **step time** — wall-clock time between rendered previews, with a click-to-toggle
-  ms/s label showing the average and an ETA for the rest of the run.
-
-Drag the grip directly above the graphs to resize them **vertically** — the image area
-above shrinks or grows to compensate. The **graphs ▾** button on the status line hides
-them entirely when you just want the preview image. Both the chosen height and the
-hidden/shown state are remembered on the node (same mechanism as KJNodes' own
-panel-height grip), so they survive saving and reloading the workflow.
-
-Both graphs are interactive, and they share one cursor — scrubbing either one moves the
-marker on both:
-
-| Action | Effect |
-|---|---|
-| Hover either graph | Scrub to any step; both headers show that step's values (σ/Δ on the left, step time on the right). |
-| Click the σ/Δ graph | Lock the hovered step so it survives moving the mouse away; click again to unlock. |
-| ← / → while hovering the graphs | Step the locked position one step at a time. |
-| Click the step-time graph (or its label/value) | Toggle the time readout between ms and s. |
-| Drag the grip above the graphs | Resize the graphs panel vertically; persists across saves. |
-| **graphs ▾** button on the status line | Hide or show the graphs; persists across saves. |
-
-Scrubbing works off whatever data has arrived — it does not depend on the σ schedule
-message specifically, so the graphs stay usable even if that one-shot message is missed.
-A step whose σ is unknown shows `—` for σ rather than disabling the readout.
-
-The graphs update on the same cadence the preview image does — `every_n_steps` and
-`max_preview_overhead` throttle both together, so a heavily throttled run's graphs show
-gaps between rendered steps rather than every single sampler step. At the default
-`every_n_steps=1` with no throttling, they're as fine-grained as the sampler itself.
+This registers `H3PreviewOverride` and `GetH3PreviewFrames`, which don't collide with
+either KJNodes' `ModelPreviewOverrideKJ` or ComfyUI-MiniMaxH3-Director's
+`MiniMaxH3PreviewOverrideCS`, so all three packs can be installed together.
 
 ## Getting a taeh3 checkpoint
 
-`tiny vae (taeh3)` needs a **taehv-format** decoder checkpoint whose latent shape
-matches MiniMax H3: 24 latent channels, patch size 2. This is the same
-[madebyollin/taehv](https://github.com/madebyollin/taehv) family of tiny temporal
-decoders that ComfyUI core and KJNodes already use for LTX previews, trained instead for
-H3's latent. Drop the checkpoint file into `ComfyUI/models/vae_approx/` and select it
-from the `tiny_vae` widget — it'll show up alongside any other `vae_approx` files you
-already have. A checkpoint whose channel count doesn't match H3's is rejected at run
-time (a warning is logged) and the node falls back to `latent2rgb` for that run.
+`tiny vae (taeh3)` needs a **taehv-format** decoder checkpoint whose latent shape matches
+MiniMax H3: 24 latent channels, patch size 2. This is the same
+[madebyollin/taehv](https://github.com/madebyollin/taehv) family of tiny temporal decoders
+ComfyUI core and KJNodes already use for LTX previews, trained for H3's latent instead.
+Drop it in `ComfyUI/models/vae_approx/` and pick it from `tiny_vae`. A checkpoint whose
+channel count doesn't match is rejected at run time (with a warning) and the node falls
+back to `latent2rgb` for that run.
+
+> ComfyUI core has since gained native `taeh3` support
+> ([Comfy-Org/ComfyUI#15695](https://github.com/Comfy-Org/ComfyUI/pull/15695)), which
+> registers `taeh3` in `VAELoader` and sizes `TAEHV` for H3 directly. On a core build new
+> enough to include it you can load a taeh3 checkpoint with the stock **VAELoader** and
+> wire it into the `vae` socket instead. The bundled `tiny_vae.py` loader is kept for
+> older builds, where core cannot size that decoder at all.
 
 ## Attribution
 
-This node is a merge of two GPL-3.0 projects:
+This pack is a port of two GPL-3.0 projects:
 
-* **H3 packed-latent unpacking, preview scheduling, playback-rate math and the node's
-  JS panel** — from `minimax_preview.py` / `js/minimax_preview.js` in
-  [ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director).
-* **The taeh3/tiny-VAE decoder loader** (`tiny_vae.py`) — ported near-verbatim from
-  `nodes/tiny_vae.py` in [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes).
-* **The interactive σ/Δ and step-time graphs** (the canvas drawing, hover/lock/arrow-key
-  scrubbing, side-by-side layout, and the panel-height resize grip, all in
-  `js/minimax_h3_preview_override.js`) — ported from
-  `web/js/preview_override/preview_override.js` in
-  [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), with the SamplerDetailBoost
-  curve overlay and per-step image-frame cache/scrub left out (out of scope for this node;
-  it keeps a single always-current preview image instead).
+* **[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)** — `h3_preview_override.py`
+  is a port of `nodes/preview_override_node.py`, `js/h3_preview_override.js` of
+  `web/js/preview_override/preview_override.js`, `js/h3_preview_override.css` of
+  `web/js/preview_override/preview_override.css`, and `tiny_vae.py` of `nodes/tiny_vae.py`.
+  Kijai's structure is kept: the OUTER_SAMPLE wrapper, off-thread encoder, NVENC MP4 with
+  WebP fallback, the per-step frame cache and playback scrub bar, and the σ/Δ + step-time
+  graphs.
+* **[ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)**
+  — the H3 packed-latent unpacking, the latent-to-pixel frame-count mapping
+  (`pixel_frames_from_latent_t`), the `true speed` playback derivation, and the
+  preview-overhead throttle.
 
-Both are licensed GNU GPLv3; this repository is too — see [LICENSE](LICENSE).
+Changes from Kijai's original, beyond the H3 adaptation:
+
+* **Packed audio+video latent.** `CFGGuider.sample` packs the video and audio streams into
+  one flat tensor and only then wraps the callback with the nested view — and that wrapper
+  sits *behind* an OUTER_SAMPLE wrapper, so what reaches the callback is the flat pack.
+  `_video_stream` unpacks it with core's own `unpack_latents`.
+* **LTX gating removed**, along with the `WrappedPreviewer` routing it fed.
+* **Frames span the whole clip** in every decode mode (see [Decode modes](#decode-modes)).
+* **No frame-rate widget** — rate is derived server-side (see [True speed](#true-speed)).
+* **Collapsible graph panel.**
+* **The SamplerDetailBoost curve overlay is not ported** — it reads `extra_options` only
+  KJNodes' own sampler node sets, and this pack doesn't ship one.
+* **Pointer input uses document-level capture-phase listeners with rect hit-testing**
+  rather than listeners on the elements. A DOM widget's own mouse events are not reliably
+  delivered across ComfyUI frontend versions and zoom levels; when they aren't, hover
+  scrubbing silently does nothing.
+
+Both upstreams are GNU GPLv3; so is this — see [LICENSE](LICENSE).

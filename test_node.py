@@ -1,6 +1,6 @@
-"""Offline checks for minimax_h3_preview_override.py — the half that needs ComfyUI on the
-path (comfy.patcher_extension, comfy.utils, latent_preview, server, comfy_api.latest,
-protocol, folder_paths, comfy.taesd.taesd/taehv). Run it with the same interpreter
+"""Offline checks for h3_preview_override.py — the half that needs ComfyUI on the path
+(comfy.patcher_extension, comfy.utils, comfy.model_management, latent_preview, server,
+comfy_api.latest, folder_paths, comfy.taesd.taesd/taehv). Run it with the same interpreter
 ComfyUI uses, from inside `custom_nodes/Comfy-H3-Preview-Override`:
 
     python test_node.py
@@ -53,7 +53,7 @@ def _load_package():
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    return sys.modules[name + ".minimax_h3_preview_override"]
+    return sys.modules[name + ".h3_preview_override"]
 
 
 preview = _load_package()
@@ -79,25 +79,41 @@ def check_raises(name, fn, needle):
 # matching parameter is a TypeError at run time and nowhere earlier — the whole graph
 # dies on the node, after the model has loaded. Cheap to catch here instead.
 def _schema_inputs(node_cls):
-    schema = node_cls.define_schema()
-    return [i.id for i in schema.inputs]
+    return [i.id for i in node_cls.define_schema().inputs]
 
 
-node_cls = preview.MiniMaxH3PreviewPlus
-params = inspect.signature(node_cls.execute.__func__).parameters
-accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-missing = [] if accepts_kwargs else [
-    name for name in _schema_inputs(node_cls) if name not in params]
-check("MiniMaxH3PreviewPlus: every schema input has an execute() parameter", missing, [])
+for node_cls in (preview.H3PreviewOverride, preview.GetH3PreviewFrames):
+    params = inspect.signature(node_cls.execute.__func__).parameters
+    accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    missing = [] if accepts_kwargs else [
+        n for n in _schema_inputs(node_cls) if n not in params]
+    check("%s: every schema input has an execute() parameter" % node_cls.__name__, missing, [])
 
-# show_vae_input was added last (after tiny_vae) and is a widget, not a socket that older
-# saved workflows already carry a value for — it has to stay last, or a workflow saved
-# before it existed hands its saved values to the wrong widgets.
-check("show_vae_input is the last widget (positional-serialisation trap)",
-      _schema_inputs(node_cls)[-1], "show_vae_input")
-decode_input = next(i for i in node_cls.define_schema().inputs if i.id == "decode")
+# tiny_vae is a widget, not a socket older workflows already carry a value for — it has to
+# stay last, or a workflow saved before it existed hands its values to the wrong widgets.
+check("tiny_vae is the last widget (positional-serialisation trap)",
+      _schema_inputs(preview.H3PreviewOverride)[-1], "tiny_vae")
+
+# `options`/`default` are ComfyUI-internal attribute names on the schema objects; read
+# them defensively so a rename upstream fails this one check instead of the whole file.
+def _input(node_cls, input_id):
+    return next(i for i in node_cls.define_schema().inputs if i.id == input_id)
+
+
+def _attr(obj, name, fallback="<no such attribute>"):
+    return getattr(obj, name, fallback)
+
+
+# The frame-rate widget is gone; playback mode replaces it and defaults to true speed.
+check("preview_fps is not an input any more",
+      "preview_fps" in _schema_inputs(preview.H3PreviewOverride), False)
+playback_in = _input(preview.H3PreviewOverride, "playback")
+check("playback offers both modes", list(_attr(playback_in, "options", [])),
+      [preview.PLAYBACK_TRUE, preview.PLAYBACK_SOURCE])
+check("playback defaults to true speed", _attr(playback_in, "default"), preview.PLAYBACK_TRUE)
+
 check("decode offers all three modes",
-      list(decode_input.options),
+      list(_attr(_input(preview.H3PreviewOverride, "decode"), "options", [])),
       [preview.DECODE_FAST, preview.DECODE_TAEH3, preview.DECODE_VAE])
 
 
@@ -109,6 +125,29 @@ check("on-grid: 7 latent frames -> 22 pixel frames (17*1+5)", pf(7), 22)
 check("on-grid: 12 latent frames -> 39 pixel frames (17*2+5)", pf(12), 39)
 check("off-grid latent frame counts still return something positive", pf(9) > 0, True)
 
+# ------------------------------------------------------------------------- _even_indices
+# This is what makes "frames spread across the whole video" true rather than a prefix:
+# whatever the count, the first and last frame of the clip are always included.
+ei = preview._even_indices
+check("asking for more than there is returns everything", ei(5, 20), [0, 1, 2, 3, 4])
+check("asking for none returns everything", ei(4, 0), [0, 1, 2, 3])
+check("a thinned selection spans the whole clip", ei(37, 5), [0, 9, 18, 27, 36])
+check("the last frame is always included", ei(100, 7)[-1], 99)
+check("the first frame is always included", ei(100, 7)[0], 0)
+check("no duplicate indices when the count is dense", len(ei(10, 9)), len(set(ei(10, 9))))
+
+# --------------------------------------------------------------------------- _playback_rate
+# true speed: the shown frames are spread across the shot's real duration, so N frames of
+# a `pixel_frames`-long clip play at 24*N/pixel_frames.
+pr = preview._playback_rate
+check("true speed spreads frames over the clip's real length",
+      round(pr(preview.PLAYBACK_TRUE, 24, 124), 4), round(24.0 * 24 / 124, 4))
+check("true speed with one image per output frame is the native rate",
+      pr(preview.PLAYBACK_TRUE, 124, 124), 24.0)
+check("source fps ignores the frame count and plays at H3's native rate",
+      pr(preview.PLAYBACK_SOURCE, 24, 124), 24.0)
+check("a rate is never zero or negative", pr(preview.PLAYBACK_TRUE, 0, 10000) > 0, True)
+
 # ------------------------------------------------------------------------------ throttle_gap
 tg = preview.throttle_gap
 check("no overhead cap means no gap", tg(5.0, 0), 0.0)
@@ -117,12 +156,13 @@ check("25% cap after a 1s preview waits 3s", tg(1.0, 25), 3.0)
 check("50% cap after a 1s preview waits 1s", tg(1.0, 50), 1.0)
 
 # ------------------------------------------------------------------------- execute() validation
+node = preview.H3PreviewOverride
 check_raises("decode='vae (quality)' without a VAE is refused by name",
-             lambda: node_cls.execute.__func__(node_cls, model=None, decode="vae (quality)"),
+             lambda: node.execute.__func__(node, model=None, decode=preview.DECODE_VAE),
              "no VAE is")
 check_raises("decode='tiny vae (taeh3)' without a tiny_vae is refused by name",
-             lambda: node_cls.execute.__func__(node_cls, model=None, decode="tiny vae (taeh3)"),
-             "no tiny")
+             lambda: node.execute.__func__(node, model=None, decode=preview.DECODE_TAEH3),
+             "no tiny VAE is")
 
 
 failed = [r for r in _results if not r[0]]

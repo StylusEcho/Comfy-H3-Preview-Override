@@ -2,7 +2,7 @@
 
 Ported from KJNodes' `nodes/tiny_vae.py` (github.com/kijai/ComfyUI-KJNodes, GPL-3.0) with
 no functional changes, so that the taeh3 decode path in
-`minimax_h3_preview_override.py` doesn't require KJNodes to be installed alongside this
+`h3_preview_override.py` doesn't require KJNodes to be installed alongside this
 node. Both `TinyVAEDecoder` (flat TAESD-style) and `TAEHVDecoder` (temporal taehv/taeh3)
 are kept, since a "tiny_vae" checkpoint dropped into `models/vae_approx` may be either.
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.0
+
+**Rewritten as a port of KJNodes' Preview Override.** The previous node
+(`MiniMaxH3PreviewPlusCS`, built up from the Director's preview node) is removed and
+replaced by `H3PreviewOverride`, ported from `nodes/preview_override_node.py` and
+`web/js/preview_override/preview_override.js` in ComfyUI-KJNodes with the H3 gaps filled
+in. Workflows using the old node need it deleted and re-added.
+
+What the port brings over the old node: the per-step frame cache with hover/lock
+scrubbing (the preview jumps to whatever step you point at, not just the latest), the
+playback scrub bar with click-to-pause, NVENC MP4 encoding with animated-WebP fallback,
+and the off-thread encoder so the sampler never blocks on a preview. A second node,
+**Get H3 Preview Frames**, returns the whole run's captured frames as an IMAGE batch.
+
+Plus the four requested changes:
+
+- **Pack renamed to `Comfy-H3-Preview-Override`** (`comfy-h3-preview-override`), matching
+  the repository.
+- **The graph panel collapses** to just its header via the ▾/▸ button, handing the space
+  back to the preview image. Persists on the node alongside the panel height.
+- **`preview_frames` spreads frames across the whole video** in every decode mode — first
+  frame to last, never a truncated opening section. For `tiny vae (taeh3)` that means the
+  whole clip is decoded and the output subsampled, where Kijai's node decodes a prefix to
+  bound cost; `preview_frames` there caps transfer size rather than decode time.
+- **The frame-rate widget is gone.** Playback rate is derived server-side from the shot's
+  real duration — the Director's `true speed`, now the default — with `source fps` (H3's
+  native 24 flat) as the alternative.
+
+Not ported: the SamplerDetailBoost curve overlay, which reads `extra_options` only
+KJNodes' own sampler sets.
+
 ## 0.4.1
 
 Bug fixes to the taeh3 preview span and to graph scrubbing, plus a graphs hide button.
