@@ -1,7 +1,7 @@
 [project]
 name = "minimaxh3-preview-plus"
 description = "MiniMax H3 Preview Plus: live, whole-shot sampling preview for MiniMax H3 with latent2rgb, taeh3 and full-VAE decode modes, interactive sigma/delta and step-time graphs, and a Settings popup."
-version = "0.4.1"
+version = "0.4.2"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs.

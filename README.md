@@ -160,6 +160,9 @@ Scrubbing works off whatever data has arrived — it does not depend on the σ s
 message specifically, so the graphs stay usable even if that one-shot message is missed.
 A step whose σ is unknown shows `—` for σ rather than disabling the readout.
 
+The preview image always fills the node's preview area at the shot's aspect ratio, so
+resizing the node scales the preview with it.
+
 The graphs update on the same cadence the preview image does — `every_n_steps` and
 `max_preview_overhead` throttle both together, so a heavily throttled run's graphs show
 gaps between rendered steps rather than every single sampler step. At the default

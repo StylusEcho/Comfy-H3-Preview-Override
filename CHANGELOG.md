@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.2
+
+- **The preview image no longer sits small in the middle of the node.** It was capped at
+  its natural size (`max-width`/`max-height: 100%`), and a preview is decoded at
+  latent-ish resolution, so it never grew to the node's width. It now absolute-fills its
+  frame with `object-fit: contain`, so it always uses the whole window at the shot's
+  aspect ratio however the node is resized.
+- **Graph hover really works now.** The previous fix removed the `cachedSigmas` gate, but
+  the actual problem was that mouse events were never being delivered to the widget's
+  canvases at all — so `hoverStep` stayed null and the header kept showing the live step
+  wherever you pointed. Scrubbing, click-to-lock, the ms/s toggle, the resize grip and the
+  graphs button are now all driven from document-level capture-phase listeners with rect
+  hit-testing, which cannot be swallowed by the canvas or the DOM-widget layer. Also fixed
+  the pointer-to-step mapping drifting when the ComfyUI canvas is zoomed (screen px were
+  being mixed with the canvas's own css px).
+
 ## 0.4.1
 
 Bug fixes to the taeh3 preview span and to graph scrubbing, plus a graphs hide button.

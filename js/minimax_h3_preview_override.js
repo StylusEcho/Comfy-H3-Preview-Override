@@ -267,15 +267,25 @@ function buildPanel(node) {
     display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
   });
 
+  // Absolute-fill, not max-width/max-height: the preview arrives at whatever size the
+  // decode produced (latent2rgb frames are latent-sized — a 1344x768 shot is an 84x48
+  // grid, and even after the server-side upscale it is nowhere near the node's width), so
+  // capping at natural size leaves it sitting tiny in the middle of the frame. Filling the
+  // frame and letting object-fit letterbox it means the preview always uses the whole
+  // window at the shot's own aspect ratio, however the node is resized.
   const img = document.createElement("img");
   Object.assign(img.style, {
-    maxWidth: "100%", maxHeight: "100%", objectFit: "contain",
-    display: "none", imageRendering: "auto",
+    position: "absolute", inset: "0", width: "100%", height: "100%",
+    objectFit: "contain", display: "none", imageRendering: "auto",
   });
 
   const idle = document.createElement("div");
   idle.textContent = IDLE_TEXT;
-  Object.assign(idle.style, { color: "#6a6a6a", fontSize: "11px", fontStyle: "italic" });
+  Object.assign(idle.style, {
+    position: "absolute", inset: "0", display: "flex",
+    alignItems: "center", justifyContent: "center",
+    color: "#6a6a6a", fontSize: "11px", fontStyle: "italic", pointerEvents: "none",
+  });
 
   frame.appendChild(img);
   frame.appendChild(idle);
@@ -400,38 +410,66 @@ function buildPanel(node) {
   panel.setGraphsHidden = setGraphsHidden;
   setGraphsHidden(!!node.properties.h3ppGraphsHidden, false);
 
-  graphsToggle.addEventListener("mousedown", (e) => e.stopPropagation());
-  graphsToggle.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setGraphsHidden(graphsPanel.style.display !== "none", true);
-  });
+  // The toggle button and the resize grip are driven from document-level capture-phase
+  // listeners with rect hit-testing, for the same reason the graph scrubbing is (see the
+  // long note in setupGraphs): a DOM widget's own mouse events are not reliably delivered
+  // across ComfyUI frontend versions and zoom levels, and these controls would be dead in
+  // exactly the cases the graphs' hover is.
+  function hits(el, ev) {
+    if (node._h3SettingsOverlay) return false;          // modal sits above the node
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;    // hidden / collapsed
+    return ev.clientX >= r.left && ev.clientX <= r.right
+        && ev.clientY >= r.top && ev.clientY <= r.bottom;
+  }
 
-  grip.addEventListener("mousedown", (e) => {
+  const onDocDown = (e) => {
     if (e.button !== 0) return;
+    if (hits(graphsToggle, e)) {
+      // Consume it so LiteGraph doesn't start dragging the node out from under the click.
+      e.preventDefault();
+      e.stopPropagation();
+      setGraphsHidden(graphsPanel.style.display !== "none", true);
+      return;
+    }
+    if (graphsPanel.style.display === "none" || !hits(grip, e)) return;
     e.preventDefault();
     e.stopPropagation();
     const startY = e.clientY;
     const startH = graphsPanel.offsetHeight;
+    // Screen px -> node px. Derived from the element's own layout rather than
+    // app.canvas.ds.scale so it stays correct however the frontend applies the zoom.
+    const gripRect = grip.getBoundingClientRect();
+    const scale = gripRect.height / Math.max(1, grip.offsetHeight || gripRect.height);
     const move = (ev) => {
-      const scale = app.canvas?.ds?.scale || 1;
-      const dy = (ev.clientY - startY) / scale;
+      const dy = (ev.clientY - startY) / (scale || 1);
       const rootRect = root.getBoundingClientRect();
       // Leave the image area at least ~80px so it never fully collapses under the graphs.
-      const maxH = Math.max(MIN_GRAPHS_H, rootRect.height / scale - 80);
+      const maxH = Math.max(MIN_GRAPHS_H, rootRect.height / (scale || 1) - 80);
       const newH = Math.max(MIN_GRAPHS_H, Math.min(maxH, startH - dy));
       graphsPanel.style.height = newH + "px";
       panel.onGraphsShown?.();
     };
     const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
+      document.removeEventListener("mousemove", move, true);
+      document.removeEventListener("mouseup", up, true);
       node.properties.h3ppGraphsH = graphsPanel.offsetHeight;
       node.graph?.change?.();
     };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-  });
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", up, true);
+  };
+  // Click is swallowed too, so the mousedown-driven toggle above doesn't also register as
+  // a canvas click once the button has already acted on it.
+  const onDocClickPanel = (e) => {
+    if (hits(graphsToggle, e)) { e.preventDefault(); e.stopPropagation(); }
+  };
+  document.addEventListener("mousedown", onDocDown, true);
+  document.addEventListener("click", onDocClickPanel, true);
+  panel.dispose = () => {
+    document.removeEventListener("mousedown", onDocDown, true);
+    document.removeEventListener("click", onDocClickPanel, true);
+  };
 
   root.appendChild(frame);
   root.appendChild(status);
@@ -706,43 +744,101 @@ function setupGraphs(node, panel) {
 
   function stepFromEvent(ev, canvas) {
     const rect = canvas.getBoundingClientRect();
-    const iW = Math.max(1, rect.width - 2 * GRAPH_PAD_X);
+    // rect is in screen px and therefore carries the graph's zoom, while GRAPH_PAD_X is in
+    // the canvas's own css px. Deriving the scale from rect.width/clientWidth (clientWidth
+    // ignores transforms, getBoundingClientRect doesn't) keeps the mapping honest when the
+    // ComfyUI canvas is zoomed, instead of the cursor drifting off the line.
+    const scale = rect.width / Math.max(1, canvas.clientWidth || rect.width);
+    const pad = GRAPH_PAD_X * scale;
+    const iW = Math.max(1, rect.width - 2 * pad);
     const xSteps = xStepCount();
-    const fx = (ev.clientX - rect.left - GRAPH_PAD_X) / iW;
+    const fx = (ev.clientX - rect.left - pad) / iW;
     return Math.max(0, Math.min(xSteps - 1, Math.round(fx * (xSteps - 1))));
   }
 
-  // Scrubbing is bound to BOTH graphs and shares one hover/lock state, so the cursor
-  // tracks across the pair and it doesn't matter which one you happen to be over.
-  function attachScrub(cell) {
-    cell.canvas.addEventListener("mousemove", (ev) => {
-      const idx = stepFromEvent(ev, cell.canvas);
-      if (idx !== hoverStep) { hoverStep = idx; redraw(); }
-    });
-    cell.canvas.addEventListener("mouseleave", () => {
-      if (hoverStep != null) { hoverStep = null; redraw(); }
-    });
-    // Keep LiteGraph from starting a node-drag under the cursor.
-    cell.canvas.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  // Scrubbing runs off document-level CAPTURE-phase listeners with manual hit-testing,
+  // not plain listeners on the canvases.
+  //
+  // Mouse events are not reliably delivered to a DOM widget's own elements: depending on
+  // ComfyUI frontend version and zoom level the widget layer can be non-interactive or
+  // sit under the graph canvas for hit-testing, and then a canvas "mousemove" simply
+  // never fires. That is the exact failure where hover appears dead and the header keeps
+  // showing the live step wherever you point — adding pointer-events:auto does not fix it,
+  // because the problem is delivery, not CSS. Capture phase on document fires before
+  // anything downstream can swallow it, and hit-testing getBoundingClientRect() uses the
+  // box the browser actually laid the canvas out in, so this tracks what the user sees.
+  function cellUnderPointer(ev) {
+    if (node._h3SettingsOverlay) return null;          // modal sits above the node
+    for (const cell of [panel.sdRow, panel.timeRow]) {
+      const r = cell.canvas.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;     // hidden / collapsed graphs
+      if (ev.clientX >= r.left && ev.clientX <= r.right
+          && ev.clientY >= r.top && ev.clientY <= r.bottom) return cell;
+    }
+    return null;
   }
-  attachScrub(panel.sdRow);
-  attachScrub(panel.timeRow);
+  function pointerInGraphsPanel(ev) {
+    if (node._h3SettingsOverlay) return false;
+    const r = panel.graphsPanel.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    return ev.clientX >= r.left && ev.clientX <= r.right
+        && ev.clientY >= r.top && ev.clientY <= r.bottom;
+  }
 
-  panel.sdRow.canvas.addEventListener("click", (ev) => {
+  // One hover/lock state shared by both graphs, so the cursor tracks across the pair and
+  // it doesn't matter which of the two you happen to be pointing at.
+  let mouseOverGraphs = false;
+  const onDocMouseMove = (ev) => {
+    // This runs for every mouse move anywhere in the app and getBoundingClientRect forces
+    // layout, so start with a single test against the whole panel: almost every event is
+    // nowhere near this node and can be dropped for the cost of one rect instead of three.
+    const rr = panel.root.getBoundingClientRect();
+    const inPanel = rr.width > 0 && rr.height > 0
+      && ev.clientX >= rr.left && ev.clientX <= rr.right
+      && ev.clientY >= rr.top && ev.clientY <= rr.bottom;
+    if (!inPanel) {
+      mouseOverGraphs = false;
+      if (hoverStep != null) { hoverStep = null; redraw(); }
+      return;
+    }
+    mouseOverGraphs = pointerInGraphsPanel(ev);
+    const cell = cellUnderPointer(ev);
+    if (!cell) {
+      if (hoverStep != null) { hoverStep = null; redraw(); }
+      return;
+    }
+    const idx = stepFromEvent(ev, cell.canvas);
+    if (idx !== hoverStep) { hoverStep = idx; redraw(); }
+  };
+  // Swallowing mousedown over a graph is what stops LiteGraph starting a node-drag when
+  // you click to lock a step.
+  const onDocMouseDown = (ev) => {
+    if (cellUnderPointer(ev)) ev.stopPropagation();
+  };
+  const onDocClick = (ev) => {
+    const cell = cellUnderPointer(ev);
+    if (!cell) return;
     ev.preventDefault();
     ev.stopPropagation();
-    lockedStep = lockedStep != null ? null : stepFromEvent(ev, panel.sdRow.canvas);
+    if (cell === panel.timeRow) {
+      // The time graph scrubs like the other one, but its click is the ms/s toggle — the
+      // lock lives on the σ/Δ graph alone, matching KJNodes.
+      timeUnitSeconds = !timeUnitSeconds;
+      renderTimeHeader();
+      return;
+    }
+    lockedStep = lockedStep != null ? null : stepFromEvent(ev, cell.canvas);
     redraw();
-  });
+  };
+  document.addEventListener("mousemove", onDocMouseMove, true);
+  document.addEventListener("mousedown", onDocMouseDown, true);
+  document.addEventListener("click", onDocClick, true);
 
-  // The time graph scrubs like the other one, but its click is the ms/s toggle — the
-  // lock lives on the σ/Δ graph alone, matching KJNodes.
   const toggleTimeUnit = (ev) => {
     ev.stopPropagation();
     timeUnitSeconds = !timeUnitSeconds;
     renderTimeHeader();
   };
-  panel.timeRow.canvas.addEventListener("click", toggleTimeUnit);
   panel.timeRow.lbl.addEventListener("click", toggleTimeUnit);
   panel.timeRow.val.addEventListener("click", toggleTimeUnit);
   panel.timeRow.lbl.style.cursor = "pointer";
@@ -750,11 +846,8 @@ function setupGraphs(node, panel) {
   panel.timeRow.canvas.title = "Hover to scrub · click to toggle ms ↔ s";
   panel.sdRow.canvas.title = "Hover to scrub · click to lock a step · ← → to step";
 
-  // Arrow-key scrub while locked, gated on hovering the graphs so global ComfyUI
-  // shortcuts (e.g. arrow-key panning) aren't shadowed anywhere else on the canvas.
-  let mouseOverGraphs = false;
-  panel.graphs.addEventListener("mouseenter", () => { mouseOverGraphs = true; });
-  panel.graphs.addEventListener("mouseleave", () => { mouseOverGraphs = false; });
+  // Arrow-key scrub while locked, gated on the pointer being over the graphs so global
+  // ComfyUI shortcuts (e.g. arrow-key panning) aren't shadowed anywhere else on the canvas.
   const onKey = (ev) => {
     if (!mouseOverGraphs) return;
     if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
@@ -766,7 +859,13 @@ function setupGraphs(node, panel) {
     redraw();
   };
   document.addEventListener("keydown", onKey, true);
-  node._mmxKeyHandler = onKey;
+
+  function dispose() {
+    document.removeEventListener("mousemove", onDocMouseMove, true);
+    document.removeEventListener("mousedown", onDocMouseDown, true);
+    document.removeEventListener("click", onDocClick, true);
+    document.removeEventListener("keydown", onKey, true);
+  }
 
   function handleEvent(data) {
     try {
@@ -801,7 +900,7 @@ function setupGraphs(node, panel) {
     redraw();
   }
   redraw(); // draw the empty grid immediately, before the first event arrives
-  return { handleEvent, reset };
+  return { handleEvent, reset, dispose };
 }
 
 app.registerExtension({
@@ -919,10 +1018,10 @@ app.registerExtension({
     const onRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
       closeSettingsModal(this);
-      if (this._mmxKeyHandler) {
-        document.removeEventListener("keydown", this._mmxKeyHandler, true);
-        this._mmxKeyHandler = null;
-      }
+      // The panel's and graphs' listeners live on document, so they outlive the node
+      // unless explicitly torn down.
+      this._mmxGraphs?.dispose?.();
+      this._mmxPreview?.dispose?.();
       if (this._mmxPreview?.img?.src?.startsWith("blob:")) {
         URL.revokeObjectURL(this._mmxPreview.img.src);
       }
