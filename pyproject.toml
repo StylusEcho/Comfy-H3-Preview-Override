@@ -1,7 +1,7 @@
 [project]
 name = "comfy-h3-preview-override"
 description = "H3 Preview Override: KJNodes' Preview Override ported to MiniMax H3 — whole-shot live sampling preview with latent2rgb/taeh3/full-VAE decode, scrubbable per-step frames, collapsible sigma/delta and step-time graphs, and true-speed playback."
-version = "0.5.1"
+version = "0.5.2"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs. PyAV is optional: present, and

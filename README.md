@@ -198,6 +198,9 @@ Changes from Kijai's original, beyond the H3 adaptation:
 * **Pointer input uses document-level capture-phase listeners with rect hit-testing**
   rather than listeners on the elements. A DOM widget's own mouse events are not reliably
   delivered across ComfyUI frontend versions and zoom levels; when they aren't, hover
-  scrubbing silently does nothing.
+  scrubbing silently does nothing. Those listeners additionally check
+  `document.elementFromPoint`, not just bounding-box overlap, so a window painted over
+  the panel — another node's own popup, or this node's own Settings modal — gets the
+  click instead of having it stolen.
 
 Both upstreams are GNU GPLv3; so is this — see [LICENSE](LICENSE).

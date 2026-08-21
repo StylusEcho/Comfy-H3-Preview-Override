@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+**Fixed the panel stealing input from windows that overlap it.** The document-level
+capture-phase listeners that make hover/click/drag reliable (see 0.4.2) hit-tested only
+by bounding-box overlap, never by what was actually topmost at that pixel. Any floating
+window painted over the panel — another node's own popup, a file browser, even this
+node's own Settings modal — still had its clicks swallowed by this node's handlers,
+because the rect check has no idea about stacking order. Mouse move, mouse down and
+click are now additionally gated on `document.elementFromPoint`, which resolves the real
+topmost element (respecting z-index and pointer-events, same as a genuine click), so the
+panel only reacts when it's actually what's on top. In-progress drags (the scrub bar, the
+resize grip) are unaffected — once legitimately started on this panel they keep tracking
+the pointer wherever it goes, matching normal input-capture behaviour.
+
 ## 0.5.1
 
 - All of the node's widgets (`decode`, `playback`, `preview_target`, `preview_frames`,

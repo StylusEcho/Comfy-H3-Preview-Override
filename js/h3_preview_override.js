@@ -1055,6 +1055,19 @@ app.registerExtension({
         return ev.clientX >= r.left && ev.clientX <= r.right
             && ev.clientY >= r.top && ev.clientY <= r.bottom;
       }
+      // inRect alone only tests bounding-box overlap, which says nothing about stacking
+      // order — if another floating window (another node's own popup, a file browser,
+      // even this node's own Settings modal) is painted on top of this panel, a click
+      // meant for that window still lands inside our rect and our capture-phase
+      // listeners would swallow it, stealing focus from whatever is actually visible.
+      // elementFromPoint asks the browser what's really topmost at that pixel (it
+      // respects z-index and pointer-events, the same way a real click would), so this
+      // gate only lets events through when this panel is genuinely what the user is
+      // looking at.
+      function isRootTopmost(ev) {
+        const top = document.elementFromPoint(ev.clientX, ev.clientY);
+        return top != null && (top === root || root.contains(top));
+      }
       function cellUnderPointer(ev) {
         for (const cell of [sdRow, timeRow]) {
           if (inRect(cell.canvas, ev)) return cell;
@@ -1078,9 +1091,9 @@ app.registerExtension({
       let scrubDragging = false;
       const onDocMouseMove = (ev) => {
         // Runs for every mouse move anywhere in the app and getBoundingClientRect forces
-        // layout, so test the whole widget once first: almost every event is nowhere near
-        // this node and can be dropped for the cost of one rect instead of several.
-        if (!inRect(root, ev)) {
+        // layout, so test the cheap rect first: almost every event is nowhere near this
+        // node and can be dropped without the more expensive elementFromPoint call.
+        if (!inRect(root, ev) || !isRootTopmost(ev)) {
           mouseOverPanel = false;
           if (hoverStep != null) { hoverStep = null; redrawSd(); }
           return;
@@ -1096,7 +1109,7 @@ app.registerExtension({
       };
 
       const onDocMouseDown = (ev) => {
-        if (ev.button !== 0 || !inRect(root, ev)) return;
+        if (ev.button !== 0 || !inRect(root, ev) || !isRootTopmost(ev)) return;
 
         if (inRect(collapseBtn, ev)) {
           ev.preventDefault();
@@ -1160,7 +1173,7 @@ app.registerExtension({
       };
 
       const onDocClick = (ev) => {
-        if (!inRect(root, ev)) return;
+        if (!inRect(root, ev) || !isRootTopmost(ev)) return;
         if (inRect(collapseBtn, ev) || inRect(settingsBtn, ev) || inRect(scrubBar, ev)) {
           ev.preventDefault();
           ev.stopPropagation();
