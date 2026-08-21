@@ -873,6 +873,13 @@ class H3PreviewOverride(io.ComfyNode):
                                        "for H3's 24-channel, patch-size-2 latent — commonly named "
                                        "'taeh3'. A checkpoint with the wrong channel count is "
                                        "rejected at run time and the node falls back to latent2rgb."),
+                io.Boolean.Input("show_vae_input", default=True, optional=True,
+                                 tooltip="Show the 'vae' socket on the node face. Purely a "
+                                         "JS-side declutter toggle — turning it off hides (and "
+                                         "disconnects) the socket for when you're only using "
+                                         "'latent2rgb (fast)' or 'tiny vae (taeh3)'; turn it back "
+                                         "on and rewire before switching to "
+                                         "decode='vae (quality)'."),
             ],
             outputs=[io.Model.Output(tooltip="Model with the preview attached.")],
             hidden=[io.Hidden.unique_id],
@@ -883,7 +890,11 @@ class H3PreviewOverride(io.ComfyNode):
     def execute(cls, model, decode=DECODE_FAST, playback=PLAYBACK_TRUE,
                 preview_target=TARGET_NODE, preview_frames=24, max_resolution=512,
                 jpeg_quality=80, every_n_steps=1, max_preview_overhead=25,
-                suppress_default_preview=True, vae=None, tiny_vae="none") -> io.NodeOutput:
+                suppress_default_preview=True, vae=None, tiny_vae="none",
+                show_vae_input=True) -> io.NodeOutput:
+        # show_vae_input is JS-only (it toggles the socket's visibility on the node face) —
+        # accepted here only because ComfyUI passes every schema input by keyword.
+        del show_vae_input
         if decode == DECODE_VAE and vae is None:
             raise ValueError(
                 "H3 Preview Override: decode is set to 'vae (quality)' but no VAE is "

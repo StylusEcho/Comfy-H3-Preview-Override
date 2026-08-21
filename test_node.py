@@ -89,10 +89,11 @@ for node_cls in (preview.H3PreviewOverride, preview.GetH3PreviewFrames):
         n for n in _schema_inputs(node_cls) if n not in params]
     check("%s: every schema input has an execute() parameter" % node_cls.__name__, missing, [])
 
-# tiny_vae is a widget, not a socket older workflows already carry a value for — it has to
-# stay last, or a workflow saved before it existed hands its values to the wrong widgets.
-check("tiny_vae is the last widget (positional-serialisation trap)",
-      _schema_inputs(preview.H3PreviewOverride)[-1], "tiny_vae")
+# show_vae_input was added last (after tiny_vae) and is a widget, not a socket older
+# workflows already carry a value for — it has to stay last, or a workflow saved before
+# it existed hands its values to the wrong widgets.
+check("show_vae_input is the last widget (positional-serialisation trap)",
+      _schema_inputs(preview.H3PreviewOverride)[-1], "show_vae_input")
 
 # `options`/`default` are ComfyUI-internal attribute names on the schema objects; read
 # them defensively so a rename upstream fails this one check instead of the whole file.

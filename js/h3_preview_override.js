@@ -309,6 +309,198 @@ function drawLineGraph(canvas, values, xSteps, hoverStep, lockedStep) {
   drawCursors(ctx, xAt, padY, H, axis, hoverStep, lockedStep);
 }
 
+// ------------------------------------------------------------------------- settings popup
+// All of the schema widgets (decode, playback, preview_target, preview_frames,
+// max_resolution, jpeg_quality, every_n_steps, max_preview_overhead,
+// suppress_default_preview, tiny_vae, show_vae_input) are pulled off the node body and
+// shown in a popup instead, opened from a "⚙" button in the panel header. This is a
+// *display* change only: the same widget objects back the popup's controls and (as
+// always) the values ComfyUI serialises into the workflow and sends to the Python node —
+// the popup just writes to `widget.value` directly rather than the widget drawing its own
+// row on the node. The one exception is `show_vae_input`, which also toggles the actual
+// `vae` socket on the node face.
+
+// Hides a widget's own row on the node body without touching its value, its callback, or
+// how it serialises — `hidden` is read by LiteGraph's widget layout/draw pass, and the
+// zeroed computeSize is a belt-and-suspenders fallback for any pass that only consults
+// size. Nothing here changes `widget.type`, so the widget keeps behaving exactly like a
+// normal combo/number/toggle widget everywhere except on-canvas.
+function hideWidget(widget) {
+  widget.hidden = true;
+  widget.origComputeSize = widget.computeSize;
+  widget.computeSize = () => [0, -4];
+}
+
+function widgetTooltip(widget) {
+  return widget.tooltip || widget.options?.tooltip || "";
+}
+
+function comboValues(widget) {
+  const v = widget.options?.values;
+  return typeof v === "function" ? v(widget) : (v || []);
+}
+
+// `vae` is a socket (io.Vae.Input), not a widget, so "hide/show" means adding/removing
+// the actual input slot — there's no vanilla "hidden but still linked" state for a slot,
+// so removing it also drops any existing wire (documented in the setting's tooltip).
+function syncVaeInputVisibility(node, show) {
+  const idx = (node.inputs || []).findIndex((inp) => inp.name === "vae");
+  if (show) {
+    if (idx === -1) node.addInput("vae", "VAE");
+  } else if (idx !== -1) {
+    node.removeInput(idx);
+  }
+  node.setDirtyCanvas?.(true, true);
+}
+
+// One label + control (+ optional description, plus a native hover tooltip) per setting,
+// built fresh each time the popup opens so it always reflects the widget's current value.
+// This modal lives directly on document.body (not inside the node's DOM-widget tree), so
+// its own controls use plain listeners — the delivery problem documented above
+// `cellUnderPointer` is specific to elements inside the widget/canvas overlay.
+function buildSettingsRow(node, widget) {
+  const row = document.createElement("div");
+  Object.assign(row.style, {
+    display: "flex", flexDirection: "column", gap: "3px",
+    padding: "7px 0", borderBottom: "1px solid #2c2c2c",
+  });
+  const tip = widgetTooltip(widget);
+  if (tip) row.title = tip; // mouseover caption, on top of the description line below
+
+  const labelRow = document.createElement("div");
+  Object.assign(labelRow.style, {
+    display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px",
+  });
+  const label = document.createElement("label");
+  label.textContent = widget.label || widget.name;
+  Object.assign(label.style, { color: "#ddd", fontSize: "12px", fontWeight: "600" });
+  labelRow.appendChild(label);
+
+  const commit = (value) => {
+    widget.value = value;
+    widget.callback?.(value, app.canvas, node);
+    if (widget.name === "show_vae_input") syncVaeInputVisibility(node, value);
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+  };
+
+  let control;
+  if (widget.type === "combo") {
+    control = document.createElement("select");
+    for (const opt of comboValues(widget)) {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      if (opt === widget.value) o.selected = true;
+      control.appendChild(o);
+    }
+    control.addEventListener("change", () => commit(control.value));
+  } else if (widget.type === "toggle") {
+    control = document.createElement("input");
+    control.type = "checkbox";
+    control.checked = !!widget.value;
+    control.style.cursor = "pointer";
+    control.addEventListener("change", () => commit(control.checked));
+  } else {
+    control = document.createElement("input");
+    control.type = "number";
+    const opts = widget.options || {};
+    if (opts.min != null) control.min = String(opts.min);
+    if (opts.max != null) control.max = String(opts.max);
+    control.step = String(opts.step || (Number.isInteger(widget.value) ? 1 : 0.1));
+    control.value = widget.value;
+    control.addEventListener("change", () => {
+      let v = parseFloat(control.value);
+      if (Number.isNaN(v)) v = widget.value;
+      if (opts.min != null) v = Math.max(opts.min, v);
+      if (opts.max != null) v = Math.min(opts.max, v);
+      control.value = v;
+      commit(v);
+    });
+  }
+  Object.assign(control.style, {
+    background: "#1c1c1c", color: "#eee", border: "1px solid #444", borderRadius: "4px",
+    padding: "4px 6px", fontSize: "12px", minWidth: "150px", boxSizing: "border-box",
+  });
+  if (tip) control.title = tip;
+  labelRow.appendChild(control);
+  row.appendChild(labelRow);
+
+  if (tip) {
+    const desc = document.createElement("div");
+    desc.textContent = tip;
+    Object.assign(desc.style, { color: "#8a8a8a", fontSize: "10.5px", lineHeight: "1.4" });
+    row.appendChild(desc);
+  }
+  return row;
+}
+
+function closeSettingsModal(node) {
+  const overlay = node._h3SettingsOverlay;
+  if (!overlay) return;
+  if (overlay._h3KeyHandler) document.removeEventListener("keydown", overlay._h3KeyHandler);
+  overlay.remove();
+  node._h3SettingsOverlay = null;
+}
+
+function openSettingsModal(node) {
+  closeSettingsModal(node); // no stacked popups if the button is clicked twice
+
+  const overlay = document.createElement("div");
+  Object.assign(overlay.style, {
+    position: "fixed", inset: "0", background: "rgba(0,0,0,0.55)",
+    zIndex: "10000", display: "flex", alignItems: "center", justifyContent: "center",
+  });
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) closeSettingsModal(node);
+  });
+
+  const dialog = document.createElement("div");
+  Object.assign(dialog.style, {
+    background: "#1a1a1a", border: "1px solid #3a3a3a", borderRadius: "8px",
+    width: "380px", maxWidth: "90vw", maxHeight: "80vh", display: "flex",
+    flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+    fontFamily: "sans-serif",
+  });
+  dialog.addEventListener("mousedown", (e) => e.stopPropagation());
+
+  const header = document.createElement("div");
+  Object.assign(header.style, {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    padding: "10px 14px", borderBottom: "1px solid #333", flex: "none",
+  });
+  const title = document.createElement("div");
+  title.textContent = "H3 Preview Override — Settings";
+  Object.assign(title.style, { color: "#fff", fontSize: "13px", fontWeight: "700" });
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "×";
+  Object.assign(closeBtn.style, {
+    background: "transparent", border: "none", color: "#aaa", fontSize: "20px",
+    cursor: "pointer", lineHeight: "1", padding: "0 2px",
+  });
+  closeBtn.addEventListener("click", () => closeSettingsModal(node));
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+
+  const body = document.createElement("div");
+  Object.assign(body.style, { padding: "2px 14px", overflowY: "auto" });
+  for (const widget of node._h3SettingsWidgets || []) {
+    body.appendChild(buildSettingsRow(node, widget));
+  }
+
+  dialog.appendChild(header);
+  dialog.appendChild(body);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  node._h3SettingsOverlay = overlay;
+
+  const onKeyDown = (e) => {
+    if (e.key === "Escape") closeSettingsModal(node);
+  };
+  document.addEventListener("keydown", onKeyDown);
+  overlay._h3KeyHandler = onKeyDown;
+}
+
 app.registerExtension({
   name: "H3PreviewOverride",
 
@@ -318,6 +510,13 @@ app.registerExtension({
     chainCallback(nodeType.prototype, "onNodeCreated", function () {
       ensureStyles();
       const node = this;
+
+      // Everything on `node.widgets` right now is a schema-driven value widget (model and
+      // vae are sockets, not widgets) — capture that exact list before anything below adds
+      // more, then hide each one so it no longer draws a row. They move into the Settings
+      // popup instead (opened from the "⚙" button built into the panel header below).
+      node._h3SettingsWidgets = (node.widgets || []).slice();
+      for (const w of node._h3SettingsWidgets) hideWidget(w);
 
       const root = el("div", "h3-pov-root");
 
@@ -367,6 +566,14 @@ app.registerExtension({
       headerTitle.textContent = "H3 Preview";
       const headerSummary = el("span", "h3-pov-panel-summary", header);
       headerSummary.textContent = "idle";
+      const settingsBtn = el("span", "h3-pov-collapse", header);
+      settingsBtn.textContent = "⚙";
+      settingsBtn.title = "Open all of this node's settings";
+
+      // Reflect show_vae_input's starting value (its schema default, or a value a saved
+      // workflow already restored onto it if this callback fires after configure).
+      const showVaeWidget = node._h3SettingsWidgets.find((w) => w.name === "show_vae_input");
+      if (showVaeWidget) syncVaeInputVisibility(node, showVaeWidget.value);
 
       const grid = el("div", "h3-pov-graphs-grid", panel);
 
@@ -418,6 +625,33 @@ app.registerExtension({
           panel.style.height = node.properties.h3PanelH + "px";
         }
         setCollapsed(!!node.properties?.h3PanelCollapsed, false);
+
+        // Heal combo widgets whose saved value is not one of their options.
+        //
+        // ComfyUI stores widgets_values positionally, so a workflow saved while the
+        // widget list had a different shape hands every value after the change to the
+        // wrong input — and a combo then refuses to run with "The value true is not
+        // available". The values themselves are unrecoverable at that point; what
+        // matters is that the node comes back usable instead of blocking the whole
+        // workflow. Runs over every widget regardless of the Settings popup, since
+        // hiding a widget's row doesn't change what it holds.
+        for (const w of node.widgets || []) {
+          const opts = w.options?.values;
+          if (!Array.isArray(opts) || opts.length === 0) continue;
+          if (opts.includes(w.value)) continue;
+          const fallback = w.options?.default ?? opts[0];
+          console.warn(
+            `[H3PreviewOverride] saved value ${JSON.stringify(w.value)} is not a valid ` +
+            `'${w.name}' — this workflow was saved against a different widget layout. ` +
+            `Falling back to ${JSON.stringify(fallback)}; check the node's settings.`);
+          w.value = fallback;
+        }
+
+        // Reconcile the vae socket with the restored show_vae_input value — whatever the
+        // base configure() did with node.inputs, this makes the actual socket state
+        // match the setting deterministically.
+        const restoredShowVae = (node.widgets || []).find((w) => w.name === "show_vae_input");
+        if (restoredShowVae) syncVaeInputVisibility(node, restoredShowVae.value);
       });
 
       // Per-run state. Declared together so helpers/handlers below can close over them.
@@ -871,6 +1105,13 @@ app.registerExtension({
           return;
         }
 
+        if (inRect(settingsBtn, ev)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openSettingsModal(node);
+          return;
+        }
+
         if (inRect(scrubBar, ev)) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -920,7 +1161,7 @@ app.registerExtension({
 
       const onDocClick = (ev) => {
         if (!inRect(root, ev)) return;
-        if (inRect(collapseBtn, ev) || inRect(scrubBar, ev)) {
+        if (inRect(collapseBtn, ev) || inRect(settingsBtn, ev) || inRect(scrubBar, ev)) {
           ev.preventDefault();
           ev.stopPropagation();
           return;
@@ -1031,6 +1272,7 @@ app.registerExtension({
 
       chainCallback(node, "onRemoved", function () {
         node._h3PreviewHandler = null;
+        closeSettingsModal(node);
         document.removeEventListener("mousemove", onDocMouseMove, true);
         document.removeEventListener("mousedown", onDocMouseDown, true);
         document.removeEventListener("click", onDocClick, true);

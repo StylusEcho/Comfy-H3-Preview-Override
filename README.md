@@ -5,7 +5,9 @@ Preview Override node, ported to MiniMax H3.
 
 Wire it between your model and the sampler and watch the *whole shot* denoise on the node
 itself: a scrubbable per-step frame history, live σ/Δ and step-time graphs, three decode
-modes, and playback that runs at the clip's real speed.
+modes, and playback that runs at the clip's real speed. Every setting lives behind a
+single **⚙** button in the panel header, so the node body stays down to just the preview
+image and the graph panel.
 
 ## Why this exists
 
@@ -74,6 +76,7 @@ Judge timing with the first, movement with the second.
 | Drag the scrub bar | Seek within the clip. |
 | Drag the grip above the panel | Resize the graph panel; persists across saves. |
 | **▾ / ▸** in the panel header | Collapse the graphs to just the header, handing the space back to the preview. Persists across saves. |
+| **⚙** in the panel header | Open the Settings popup — see below. |
 
 The graphs:
 
@@ -87,9 +90,17 @@ The graphs:
 Scrubbing works off whatever data has arrived; it doesn't depend on the one-shot σ
 schedule message, and a step with no known σ shows `—` rather than disabling the readout.
 
-## Widgets
+## Settings
 
-| Widget | What it does |
+Click **⚙** in the panel header to open a popup with every widget below — the node body
+itself only ever shows the preview image and the graph panel. The popup edits the same
+underlying widget values ComfyUI always serialised (nothing about how a workflow saves or
+loads changed), so old saved workflows load their settings exactly as before; you just no
+longer scroll a stack of rows above the preview to see or change them. Hover any row (or
+its control) for a mouseover caption explaining that setting — the same text is also
+shown underneath the row.
+
+| Setting | What it does |
 |---|---|
 | `decode` | `latent2rgb (fast)`, `tiny vae (taeh3)` or `vae (quality)` — see above. |
 | `playback` | `true speed` (default) or `source fps` — see above. |
@@ -101,7 +112,10 @@ schedule message, and a step with no known σ shows `—` rather than disabling 
 | `max_preview_overhead` | Share of render time previews may use, in percent (default 25). After a preview costing C seconds the next waits `C·(100/P − 1)` s. `0` disables. |
 | `suppress_default_preview` | Suppress ComfyUI's built-in single-frame preview while this runs. |
 | `tiny_vae` | Which `models/vae_approx` checkpoint to use for `decode='tiny vae (taeh3)'`. |
-| `vae` (socket) | `minimax_h3_video_vae`. Only needed for `decode='vae (quality)'`. |
+| `show_vae_input` | Shows or hides the `vae` socket on the node face. On by default; turn it off to declutter when you're only using `latent2rgb` or `tiny vae (taeh3)`. Turning it off **disconnects** any wired VAE (a socket has no "hidden but still linked" state), so switch it back on and rewire before using `decode='vae (quality)'`. |
+
+`vae` itself isn't a Settings-popup row — it's a socket (`minimax_h3_video_vae`), shown or
+hidden by `show_vae_input` above. Only needed for `decode='vae (quality)'`.
 
 **Get H3 Preview Frames** is a second node that returns everything captured during the
 last run as an IMAGE batch — one frame per rendered preview, so it reads as a timelapse of
@@ -176,6 +190,9 @@ Changes from Kijai's original, beyond the H3 adaptation:
 * **Frames span the whole clip** in every decode mode (see [Decode modes](#decode-modes)).
 * **No frame-rate widget** — rate is derived server-side (see [True speed](#true-speed)).
 * **Collapsible graph panel.**
+* **A Settings popup** replaces the stack of widget rows Kijai's node draws above the
+  preview — see [Settings](#settings). Adds one new widget, `show_vae_input`, to toggle
+  the `vae` socket's visibility.
 * **The SamplerDetailBoost curve overlay is not ported** — it reads `extra_options` only
   KJNodes' own sampler node sets, and this pack doesn't ship one.
 * **Pointer input uses document-level capture-phase listeners with rect hit-testing**

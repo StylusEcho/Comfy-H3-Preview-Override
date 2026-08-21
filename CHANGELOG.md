@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1
+
+- All of the node's widgets (`decode`, `playback`, `preview_target`, `preview_frames`,
+  `max_resolution`, `jpeg_quality`, `every_n_steps`, `max_preview_overhead`,
+  `suppress_default_preview`, `tiny_vae`) now live in a popup opened by a **⚙** button in
+  the panel header, instead of each drawing its own row above the preview. Purely a
+  display change — the same widget objects back the popup's controls, so saved workflows
+  load their values exactly as before.
+- Added a **`show_vae_input`** setting that shows or hides the `vae` socket on the node
+  face — a declutter toggle for when you're only using `latent2rgb` or `tiny vae
+  (taeh3)`. Turning it off disconnects any wired VAE, since a socket has no "hidden but
+  still linked" state.
+
 ## 0.5.0
 
 **Rewritten as a port of KJNodes' Preview Override.** The previous node
